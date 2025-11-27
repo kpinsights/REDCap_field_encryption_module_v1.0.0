@@ -1,6 +1,6 @@
 # REDCap Field Encryption Module
 
-A REDCap External Module that automatically encrypts sensitive field values (like email addresses) to protect participant privacy in longitudinal studies. Encrypted values are completely hidden from researchers but remain accessible to the system for automated survey invitations and notifications.
+A REDCap External Module that automatically encrypts sensitive field values (like email addresses) to protect participant privacy REDCap Surveys. Encrypted fields are completely hidden from researchers but remain accessible to the system for automated survey invitations and notifications.
 
 ## Overview
 
