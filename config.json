@@ -1,0 +1,36 @@
+{
+    "name": "REDCap Field Encryption Module",
+    "namespace": "CERCHECW\\FieldEncryptionModule",
+    "description": "Encrypts sensitive field values (like email addresses) so they are completely hidden from researchers but accessible to the system for automated invitations and notifications. Supports longitudinal projects and surveys. Use @ENCRYPT action tag on fields to enable encryption.",
+    "authors": [
+        {
+        "name": "Kshitiz Pokhrel",
+        "email": "kpokhrel@torontomu.ca",
+        "institution": "CERC in Health Equity & Community Well-Being, Toronto Metropolitan University"
+        },
+        {
+        "name": "Ryan McRonald",
+        "email": "rmcronald@uvic.ca",
+        "institution": "University of Victoria"
+        }
+    ],
+    "framework-version": 14,
+    "compatibility":{
+        "php-version-min":"7.4.0",
+        "redcap-version-min":"15.0.0"
+    },
+    "system-settings":[
+        {
+            "key":"encryption-key",
+            "name":"Master Encryption Key",
+            "type":"text",
+            "required":true
+        }
+    ],
+    "permissions":[
+        "redcap_save_record",
+        "redcap_data_entry_form",
+        "redcap_email",
+        "redcap_survey_page"
+    ]
+}
