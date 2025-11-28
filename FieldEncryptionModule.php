@@ -22,11 +22,10 @@ class FieldEncryptionModule extends AbstractExternalModule
         if (empty($keyHex)) {
             throw new \Exception('Encryption key not configured in system settings');
         }
-        
         return hex2bin($keyHex);
     }
 
-        /**
+    /**
      * Get list of fields with @ENCRYPT action tag in this project
      * 
      * @param int|null $project_id Optional project ID (uses current project if null)
@@ -54,4 +53,35 @@ class FieldEncryptionModule extends AbstractExternalModule
         }
         
         return $fieldsToEncrypt;
+    }
+    /**
+     * Encrypt a given plaintext value
+     * 
+     * @param string Value to encrypt
+     * @return string Encrypted value
+     */
+    public function encryptValue($plaintext)
+    {
+        $key = $this->getEncryptionKey();
+        $encrypted = SaferCrypto::encrypt($plaintext, $key, true);
+        return 'ENC:' . $encrypted; // ENC: Prefix to identify encrypted values
+    }
+    /**
+     * Decrypt a given encrypted value
+     * 
+     * @param string Encrypted value
+     * @return string Decrypted plaintext value
+     */
+    public function decryptValue($encryptedValue)
+    {
+        //Check if the value is encrypted
+        // If the position of ENC: is not at the start, return the value as is
+        if(strpos($encryptedValue, 'ENC:') !== 0) {
+            return $encryptedValue; // Not encrypted, return as is
+        }
+
+        $key = $this->getEncryptionKey();
+        $encrypted = substr($encryptedValue, 4); // Remove ENC: prefix
+        $decrypted = SaferCrypto::decrypt($encrypted, $key, true);
+        return $decrypted;
     }
