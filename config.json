@@ -26,11 +26,5 @@
             "type":"text",
             "required":true
         }
-    ],
-    "permissions":[
-        "redcap_save_record",
-        "redcap_data_entry_form",
-        "redcap_email",
-        "redcap_survey_page"
     ]
 }

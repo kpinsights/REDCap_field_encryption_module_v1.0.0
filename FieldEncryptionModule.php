@@ -2,7 +2,10 @@
 namespace CERCHECW\FieldEncryptionModule;
 
 use ExternalModules\AbstractExternalModule;
-use CERCHECW\FieldEncryptionModule\SaferCrypto; 
+
+// Load encryption classes
+require_once __DIR__ . '/UnsafeCrypto.php';
+require_once __DIR__ . '/SaferCrypto.php';
 
 /**
  * Field Encryption Module
@@ -11,7 +14,24 @@ use CERCHECW\FieldEncryptionModule\SaferCrypto;
 
 class FieldEncryptionModule extends AbstractExternalModule
 {
-    /** 
+    /**
+     * Hook: redcap_every_page_before_render
+     * Diagnostic hook to verify module is loading
+     */
+    public function redcap_every_page_before_render($project_id)
+    {
+        // Only log once per session to avoid spam
+        if (!isset($_SESSION['field_encryption_loaded'])) {
+            $this->log("Field Encryption Module is LOADED and ACTIVE", [
+                'project_id' => $project_id,
+                'php_version' => phpversion(),
+                'module_version' => $this->VERSION ?? 'unknown'
+            ]);
+            $_SESSION['field_encryption_loaded'] = true;
+        }
+    }
+
+    /**
      * Get the encryption key from system settings
      * @return string (raw binary)
      * @throws \Exception if the key is not set
