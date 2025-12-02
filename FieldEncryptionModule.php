@@ -98,14 +98,27 @@ class FieldEncryptionModule extends AbstractExternalModule
      */
     public function redcap_save_record($project_id, $record, $instrument, $event_id, $group_id, $survey_hash, $response_id, $repeat_instance)
     {
+        $this->log("Module triggered", [
+            'project_id' => $project_id,
+            'record' => $record,
+            'instrument' => $instrument
+        ]);
+        
         // Get fields to encrypt 
         $fieldsToEncrypt = $this->getFieldsToEncrypt($project_id);
+        
+        $this->log("Fields to encrypt found", [
+            'fields' => $fieldsToEncrypt,
+            'count' => count($fieldsToEncrypt)
+        ]);
+        
         // If none, exit early
         if (empty($fieldsToEncrypt)) {
+            $this->log("No fields to encrypt - EXITING");
             return;
         }
         
-        //Get current data record dqata
+        // Get current data record data
         $params = [
             'project_id' => $project_id,
             'return_format' => 'array',
@@ -116,12 +129,25 @@ class FieldEncryptionModule extends AbstractExternalModule
         if ($repeat_instance > 1) {
             $params['redcap_repeat_instance'] = $repeat_instance;
         }
+        
+        $this->log("Getting data", ['params' => $params]);
         $data = \REDCap::getData($params);
 
         // check if there is data to process
-        if (empty($data) || !isset($data[$record][$event_id])) {
+        if (empty($data)) {
+            $this->log("ERROR: getData returned empty");
             return;
         }
+        
+        if (!isset($data[$record][$event_id])) {
+            $this->log("ERROR: Data structure missing", [
+                'has_record' => isset($data[$record]),
+                'has_event' => isset($data[$record][$event_id])
+            ]);
+            return;
+        }
+        
+        $this->log("Data retrieved successfully");
 
         $recordData = $data[$record][$event_id];
 
@@ -129,28 +155,60 @@ class FieldEncryptionModule extends AbstractExternalModule
             $recordData = $recordData['repeat_instances'][$instrument][$repeat_instance];
         }
         
+        $this->log("Record data structure", [
+            'available_fields' => array_keys($recordData)
+        ]);
+        
         $needsUpdate = false;
         $updatedData = [];
 
         // Check each field that needs encryption
         foreach ($fieldsToEncrypt as $fieldName) {
+            $this->log("Checking field", ['field' => $fieldName]);
+            
             // Skip if field doesn't exist in current data
             if (!isset($recordData[$fieldName])) {
+                $this->log("Field NOT in record data", ['field' => $fieldName]);
                 continue;
             }
             
             $value = $recordData[$fieldName];
             
+            $this->log("Field value", [
+                'field' => $fieldName,
+                'value' => $value,
+                'is_empty' => empty($value),
+                'starts_with_enc' => strpos($value, 'ENC:') === 0
+            ]);
+            
             // Skip if empty or already encrypted
             if (empty($value) || strpos($value, 'ENC:') === 0) {
+                $this->log("Skipping field (empty or encrypted)", ['field' => $fieldName]);
                 continue;
             }
             
             // Encrypt the value
-            $encryptedValue = $this->encryptValue($value);
-            $updatedData[$fieldName] = $encryptedValue;
-            $needsUpdate = true;
+            try {
+                $this->log("About to encrypt", ['field' => $fieldName]);
+                $encryptedValue = $this->encryptValue($value);
+                $this->log("Encryption successful", [
+                    'field' => $fieldName,
+                    'encrypted' => substr($encryptedValue, 0, 20) . '...'
+                ]);
+                $updatedData[$fieldName] = $encryptedValue;
+                $needsUpdate = true;
+            } catch (\Exception $e) {
+                $this->log("ERROR encrypting", [
+                    'field' => $fieldName,
+                    'error' => $e->getMessage()
+                ]);
+            }
         }
+        
+        $this->log("After processing", [
+            'needsUpdate' => $needsUpdate,
+            'updatedData' => $updatedData
+        ]);
         
         // Save encrypted values back to database
         if ($needsUpdate) {
@@ -170,8 +228,19 @@ class FieldEncryptionModule extends AbstractExternalModule
                 $saveParams['data'][$record][$event_id]['redcap_repeat_instrument'] = $instrument;
             }
             
-            \REDCap::saveData($saveParams);
+            $this->log("Calling saveData", ['saveParams' => $saveParams]);
+            
+            try {
+                $result = \REDCap::saveData($saveParams);
+                $this->log("saveData result", ['result' => $result]);
+            } catch (\Exception $e) {
+                $this->log("ERROR in saveData", ['error' => $e->getMessage()]);
+            }
+        } else {
+            $this->log("No updates needed - NOT SAVING");
         }
+        
+        $this->log("Module finished processing");
     }
 
         /**
