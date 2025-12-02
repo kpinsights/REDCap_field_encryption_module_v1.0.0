@@ -23,8 +23,12 @@ class FieldEncryptionModule extends AbstractExternalModule
         if (empty($keyHex)) {
             throw new \Exception('Encryption key not configured in system settings');
         }
-        myKey =  hex2bin($keyHex);
-        print $myKey;
+        $myKey =  hex2bin($keyHex);
+        $log_data = [
+            'myKey' => $myKey
+        ];
+        $this->log('Custom action triggered', $log_data);
+    }
         return $myKey;
     }
 
