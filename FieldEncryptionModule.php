@@ -23,7 +23,9 @@ class FieldEncryptionModule extends AbstractExternalModule
         if (empty($keyHex)) {
             throw new \Exception('Encryption key not configured in system settings');
         }
-        return hex2bin($keyHex);
+        myKey =  hex2bin($keyHex);
+        print $myKey;
+        return $myKey;
     }
 
     /**
