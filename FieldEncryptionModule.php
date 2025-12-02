@@ -28,7 +28,6 @@ class FieldEncryptionModule extends AbstractExternalModule
             'myKey' => $myKey
         ];
         $this->log('Custom action triggered', $log_data);
-    }
         return $myKey;
     }
 
