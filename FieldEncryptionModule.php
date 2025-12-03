@@ -44,10 +44,9 @@ class FieldEncryptionModule extends AbstractExternalModule
             throw new \Exception('Encryption key not configured in system settings');
         }
         $myKey =  hex2bin($keyHex);
-        $log_data = [
-            'myKey' => $myKey
-        ];
-        $this->log('Custom action triggered', $log_data);
+        $this->log('Custom action triggered', [
+            'myKey' => base64_encode($myKey)
+        ]);
         return $myKey;
     }
 
@@ -141,20 +140,26 @@ class FieldEncryptionModule extends AbstractExternalModule
     public function redcap_save_record($project_id, $record, $instrument, $event_id, $group_id, $survey_hash, $response_id, $repeat_instance)
     {
         try {
+            // Ensure repeat_instance has a default value
+            if ($repeat_instance === null || $repeat_instance === '') {
+                $repeat_instance = 1;
+            }
+
             $this->log("Module triggered", [
                 'project_id' => $project_id,
                 'record' => $record,
                 'instrument' => $instrument,
                 'event_id' => $event_id,
                 'survey_hash' => $survey_hash ? 'present' : 'null',
-                'response_id' => $response_id
+                'response_id' => $response_id,
+                'repeat_instance' => $repeat_instance
             ]);
 
             // Get fields to encrypt
             $fieldsToEncrypt = $this->getFieldsToEncrypt($project_id);
-        
+
         $this->log("Fields to encrypt found", [
-            'fields' => $fieldsToEncrypt,
+            'fields' => json_encode($fieldsToEncrypt),
             'count' => count($fieldsToEncrypt)
         ]);
         
@@ -175,8 +180,8 @@ class FieldEncryptionModule extends AbstractExternalModule
         if ($repeat_instance > 1) {
             $params['redcap_repeat_instance'] = $repeat_instance;
         }
-        
-        $this->log("Getting data", ['params' => $params]);
+
+        $this->log("Getting data", ['params' => json_encode($params)]);
         $data = \REDCap::getData($params);
 
         // check if there is data to process
@@ -202,7 +207,7 @@ class FieldEncryptionModule extends AbstractExternalModule
         }
         
         $this->log("Record data structure", [
-            'available_fields' => array_keys($recordData)
+            'available_fields' => json_encode(array_keys($recordData))
         ]);
         
         $needsUpdate = false;
@@ -253,7 +258,7 @@ class FieldEncryptionModule extends AbstractExternalModule
         
         $this->log("After processing", [
             'needsUpdate' => $needsUpdate,
-            'updatedData' => $updatedData
+            'updatedData' => json_encode($updatedData)
         ]);
         
         // Save encrypted values back to database
@@ -274,11 +279,11 @@ class FieldEncryptionModule extends AbstractExternalModule
                 $saveParams['data'][$record][$event_id]['redcap_repeat_instrument'] = $instrument;
             }
             
-            $this->log("Calling saveData", ['saveParams' => $saveParams]);
-            
+            $this->log("Calling saveData", ['saveParams' => json_encode($saveParams)]);
+
             try {
                 $result = \REDCap::saveData($saveParams);
-                $this->log("saveData result", ['result' => $result]);
+                $this->log("saveData result", ['result' => json_encode($result)]);
             } catch (\Exception $e) {
                 $this->log("ERROR in saveData", ['error' => $e->getMessage()]);
             }
