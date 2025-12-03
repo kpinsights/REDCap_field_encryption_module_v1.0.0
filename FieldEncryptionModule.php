@@ -302,15 +302,14 @@ class FieldEncryptionModule extends AbstractExternalModule
             try {
                 // Save each field directly to the database to bypass validation
                 foreach ($updatedData as $fieldName => $encryptedValue) {
-                    $sql = "UPDATE redcap_data
-                            SET value = ?
-                            WHERE project_id = ?
-                            AND event_id = ?
-                            AND record = ?
-                            AND field_name = ?";
-
                     if ($repeat_instance > 1) {
-                        $sql .= " AND instance = ?";
+                        $sql = "UPDATE redcap_data
+                                SET value = ?
+                                WHERE project_id = ?
+                                AND event_id = ?
+                                AND record = ?
+                                AND field_name = ?
+                                AND instance = ?";
                         $params = [
                             $encryptedValue,
                             $project_id,
@@ -320,7 +319,13 @@ class FieldEncryptionModule extends AbstractExternalModule
                             $repeat_instance
                         ];
                     } else {
-                        $sql .= " AND (instance IS NULL OR instance = 1)";
+                        $sql = "UPDATE redcap_data
+                                SET value = ?
+                                WHERE project_id = ?
+                                AND event_id = ?
+                                AND record = ?
+                                AND field_name = ?
+                                AND (instance IS NULL OR instance = 1)";
                         $params = [
                             $encryptedValue,
                             $project_id,
