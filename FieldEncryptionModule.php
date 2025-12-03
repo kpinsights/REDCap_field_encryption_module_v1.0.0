@@ -293,30 +293,61 @@ class FieldEncryptionModule extends AbstractExternalModule
         
         // Save encrypted values back to database
         if ($needsUpdate) {
-            $saveParams = [
-                'project_id' => $project_id,
-                'dataFormat' => 'array',
-                'overwriteBehavior' => 'overwrite',
-                'data' => [
-                    $record => [
-                        $event_id => $updatedData
-                    ]
-                ]
-            ];
-            
-            // Add repeat instance if applicable
-            if ($repeat_instance > 1) {
-                $saveParams['data'][$record][$event_id]['redcap_repeat_instance'] = $repeat_instance;
-                $saveParams['data'][$record][$event_id]['redcap_repeat_instrument'] = $instrument;
-            }
-            
-            $this->log("Calling saveData", ['saveParams' => json_encode($saveParams)]);
+            $this->log("Saving encrypted data directly to database", [
+                'record' => $record,
+                'event_id' => $event_id,
+                'field_count' => count($updatedData)
+            ]);
 
             try {
-                $result = \REDCap::saveData($saveParams);
-                $this->log("saveData result", ['result' => json_encode($result)]);
+                // Save each field directly to the database to bypass validation
+                foreach ($updatedData as $fieldName => $encryptedValue) {
+                    $sql = "UPDATE redcap_data
+                            SET value = ?
+                            WHERE project_id = ?
+                            AND event_id = ?
+                            AND record = ?
+                            AND field_name = ?";
+
+                    if ($repeat_instance > 1) {
+                        $sql .= " AND instance = ?";
+                        $result = $this->query($sql, [
+                            $encryptedValue,
+                            $project_id,
+                            $event_id,
+                            $record,
+                            $fieldName,
+                            $repeat_instance
+                        ]);
+                    } else {
+                        $sql .= " AND (instance IS NULL OR instance = 1)";
+                        $result = $this->query($sql, [
+                            $encryptedValue,
+                            $project_id,
+                            $event_id,
+                            $record,
+                            $fieldName
+                        ]);
+                    }
+
+                    $this->log("Direct database update", [
+                        'field' => $fieldName,
+                        'affected_rows' => $result->affected_rows
+                    ]);
+                }
+
+                // Log the record in REDCap's logging table
+                \REDCap::logEvent(
+                    "Field Encryption Module",
+                    "Encrypted fields: " . implode(', ', array_keys($updatedData)),
+                    null,
+                    $record,
+                    null,
+                    $project_id
+                );
+
             } catch (\Exception $e) {
-                $this->log("ERROR in saveData", ['error' => $e->getMessage()]);
+                $this->log("ERROR in direct database save", ['error' => $e->getMessage()]);
             }
         } else {
             $this->log("No updates needed - NOT SAVING");
@@ -502,38 +533,78 @@ class FieldEncryptionModule extends AbstractExternalModule
 
     /**
      * Hook : redcap_email
+     * Automatically decrypt email addresses for automated invitations
      */
-        public function redcap_email($to, $from, $subject, $message, $cc, $bcc, $fromName, $attachments)
+    public function redcap_email($to, $from, $subject, $message, $cc, $bcc, $fromName, $attachments)
     {
-        // Check if recipient is encrypted
-        if (strpos($to, 'ENC:') === 0) {
-            try {
-                // Decrypt the recipient address
+        try {
+            $modified = false;
+            $decryptedTo = $to;
+            $decryptedCc = $cc;
+            $decryptedBcc = $bcc;
+
+            // Decrypt recipient address if encrypted
+            if (!empty($to) && strpos($to, 'ENC:') === 0) {
                 $decryptedTo = $this->decryptValue($to);
-                
-                // Send email with decrypted address using REDCap's email function
-                \REDCap::email($decryptedTo, $from, $subject, $message, $cc, $bcc, $fromName, $attachments);
-                
-                // Return FALSE to prevent REDCap from sending again with encrypted address
-                return false;
-                
-            } catch (\Exception $e) {
-                // Log error but don't break email system
-                \REDCap::logEvent(
-                    "Field Encryption Module Error",
-                    "Failed to decrypt email address: " . $e->getMessage(),
-                    null,
-                    null,
-                    null,
-                    $this->getProjectId()
-                );
-                
-                // Return TRUE to let REDCap try to send anyway 
-                return true;
+                $modified = true;
+
+                $this->log("Decrypted email TO address", [
+                    'original_length' => strlen($to),
+                    'decrypted_email' => $decryptedTo
+                ]);
             }
+
+            // Decrypt CC addresses if encrypted
+            if (!empty($cc) && strpos($cc, 'ENC:') === 0) {
+                $decryptedCc = $this->decryptValue($cc);
+                $modified = true;
+
+                $this->log("Decrypted email CC address", [
+                    'decrypted_email' => $decryptedCc
+                ]);
+            }
+
+            // Decrypt BCC addresses if encrypted
+            if (!empty($bcc) && strpos($bcc, 'ENC:') === 0) {
+                $decryptedBcc = $this->decryptValue($bcc);
+                $modified = true;
+
+                $this->log("Decrypted email BCC address", [
+                    'decrypted_email' => $decryptedBcc
+                ]);
+            }
+
+            // If we decrypted anything, send with decrypted values
+            if ($modified) {
+                \REDCap::email($decryptedTo, $from, $subject, $message, $decryptedCc, $decryptedBcc, $fromName, $attachments);
+
+                $this->log("Email sent with decrypted addresses", [
+                    'to' => $decryptedTo,
+                    'subject' => substr($subject, 0, 50)
+                ]);
+
+                // Return FALSE to prevent REDCap from sending again with encrypted addresses
+                return false;
+            }
+
+        } catch (\Exception $e) {
+            // Log error but don't break email system
+            $this->log("ERROR in redcap_email hook", [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+
+            \REDCap::logEvent(
+                "Field Encryption Module Error",
+                "Failed to decrypt email address: " . $e->getMessage(),
+                null,
+                null,
+                null,
+                $this->getProjectId()
+            );
         }
-        
-        // Not encrypted - let REDCap handle normally
+
+        // Not encrypted or error - let REDCap handle normally
         return true;
     }
 }
