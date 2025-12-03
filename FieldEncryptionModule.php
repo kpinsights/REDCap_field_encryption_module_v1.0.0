@@ -311,29 +311,49 @@ class FieldEncryptionModule extends AbstractExternalModule
 
                     if ($repeat_instance > 1) {
                         $sql .= " AND instance = ?";
-                        $result = $this->query($sql, [
+                        $params = [
                             $encryptedValue,
                             $project_id,
                             $event_id,
                             $record,
                             $fieldName,
                             $repeat_instance
-                        ]);
+                        ];
                     } else {
                         $sql .= " AND (instance IS NULL OR instance = 1)";
-                        $result = $this->query($sql, [
+                        $params = [
                             $encryptedValue,
                             $project_id,
                             $event_id,
                             $record,
                             $fieldName
-                        ]);
+                        ];
                     }
 
-                    $this->log("Direct database update", [
+                    $this->log("Executing SQL UPDATE", [
+                        'sql' => $sql,
+                        'params' => json_encode($params),
                         'field' => $fieldName,
-                        'affected_rows' => $result->affected_rows
+                        'encrypted_length' => strlen($encryptedValue)
                     ]);
+
+                    $result = $this->query($sql, $params);
+
+                    $this->log("Direct database update result", [
+                        'field' => $fieldName,
+                        'affected_rows' => $result->affected_rows,
+                        'insert_id' => $result->insert_id
+                    ]);
+
+                    // If no rows affected, log what we're looking for
+                    if ($result->affected_rows === 0) {
+                        $this->log("WARNING: No rows updated - checking if record exists", [
+                            'project_id' => $project_id,
+                            'event_id' => $event_id,
+                            'record' => $record,
+                            'field_name' => $fieldName
+                        ]);
+                    }
                 }
 
                 // Log the record in REDCap's logging table
