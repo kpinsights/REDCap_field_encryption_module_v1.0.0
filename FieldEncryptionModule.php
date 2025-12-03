@@ -53,32 +53,54 @@ class FieldEncryptionModule extends AbstractExternalModule
 
     /**
      * Get list of fields with @ENCRYPT action tag in this project
-     * 
+     *
      * @param int|null $project_id Optional project ID (uses current project if null)
      * @return array List of field names to encrypt
      */
     private function getFieldsToEncrypt($project_id = null)
     {
-        if ($project_id === null) {
-            $project_id = $this->getProjectId();
-        }
-        
-        $fieldsToEncrypt = [];
-        
-        // Get data dictionary for this project
-        $dictionary = \REDCap::getDataDictionary($project_id, 'array');
-        
-        // Look for @ENCRYPT tag in each field's annotations
-        foreach ($dictionary as $fieldName => $fieldInfo) {
-            $actionTags = $fieldInfo['field_annotation'] ?? '';
-            
-            // Check if @ENCRYPT tag is present
-            if (stripos($actionTags, '@ENCRYPT') !== false) {
-                $fieldsToEncrypt[] = $fieldName;
+        try {
+            if ($project_id === null) {
+                $project_id = $this->getProjectId();
             }
+
+            $this->log("Getting fields to encrypt", ['project_id' => $project_id]);
+
+            $fieldsToEncrypt = [];
+
+            // Get data dictionary for this project
+            $dictionary = \REDCap::getDataDictionary($project_id, 'array');
+
+            if (empty($dictionary)) {
+                $this->log("WARNING: Data dictionary is empty", ['project_id' => $project_id]);
+                return [];
+            }
+
+            $this->log("Data dictionary retrieved", ['field_count' => count($dictionary)]);
+
+            // Look for @ENCRYPT tag in each field's annotations
+            foreach ($dictionary as $fieldName => $fieldInfo) {
+                $actionTags = $fieldInfo['field_annotation'] ?? '';
+
+                // Check if @ENCRYPT tag is present
+                if (stripos($actionTags, '@ENCRYPT') !== false) {
+                    $fieldsToEncrypt[] = $fieldName;
+                    $this->log("Found field with @ENCRYPT", [
+                        'field' => $fieldName,
+                        'annotation' => $actionTags
+                    ]);
+                }
+            }
+
+            return $fieldsToEncrypt;
+
+        } catch (\Exception $e) {
+            $this->log("ERROR in getFieldsToEncrypt", [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+            return [];
         }
-        
-        return $fieldsToEncrypt;
     }
     /**
      * Encrypt a given plaintext value
@@ -112,20 +134,24 @@ class FieldEncryptionModule extends AbstractExternalModule
         return $decrypted;
     }
 
-    /** 
+    /**
      * Hook: redcap_save_record
      * Encrypt fields before saving to database
      */
     public function redcap_save_record($project_id, $record, $instrument, $event_id, $group_id, $survey_hash, $response_id, $repeat_instance)
     {
-        $this->log("Module triggered", [
-            'project_id' => $project_id,
-            'record' => $record,
-            'instrument' => $instrument
-        ]);
-        
-        // Get fields to encrypt 
-        $fieldsToEncrypt = $this->getFieldsToEncrypt($project_id);
+        try {
+            $this->log("Module triggered", [
+                'project_id' => $project_id,
+                'record' => $record,
+                'instrument' => $instrument,
+                'event_id' => $event_id,
+                'survey_hash' => $survey_hash ? 'present' : 'null',
+                'response_id' => $response_id
+            ]);
+
+            // Get fields to encrypt
+            $fieldsToEncrypt = $this->getFieldsToEncrypt($project_id);
         
         $this->log("Fields to encrypt found", [
             'fields' => $fieldsToEncrypt,
@@ -259,8 +285,17 @@ class FieldEncryptionModule extends AbstractExternalModule
         } else {
             $this->log("No updates needed - NOT SAVING");
         }
-        
+
         $this->log("Module finished processing");
+
+        } catch (\Exception $e) {
+            $this->log("CRITICAL ERROR in redcap_save_record", [
+                'error' => $e->getMessage(),
+                'file' => $e->getFile(),
+                'line' => $e->getLine(),
+                'trace' => $e->getTraceAsString()
+            ]);
+        }
     }
 
         /**
