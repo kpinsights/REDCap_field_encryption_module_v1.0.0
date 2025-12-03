@@ -14,6 +14,8 @@ require_once __DIR__ . '/SaferCrypto.php';
 
 class FieldEncryptionModule extends AbstractExternalModule
 {
+    private static $processingRecord = [];
+
     /**
      * Hook: redcap_every_page_before_render
      * Diagnostic hook to verify module is loading
@@ -134,10 +136,28 @@ class FieldEncryptionModule extends AbstractExternalModule
     }
 
     /**
+     * Hook: redcap_survey_complete
+     * Encrypt fields after survey completion
+     */
+    public function redcap_survey_complete($project_id, $record, $instrument, $event_id, $group_id, $survey_hash, $response_id, $repeat_instance)
+    {
+        $this->encryptRecordData($project_id, $record, $instrument, $event_id, $repeat_instance, "survey_complete");
+    }
+
+    /**
      * Hook: redcap_save_record
-     * Encrypt fields before saving to database
+     * Encrypt fields after record save
      */
     public function redcap_save_record($project_id, $record, $instrument, $event_id, $group_id, $survey_hash, $response_id, $repeat_instance)
+    {
+        $this->encryptRecordData($project_id, $record, $instrument, $event_id, $repeat_instance, "save_record");
+    }
+
+    /**
+     * Core encryption logic that runs after data is saved
+     * This re-encrypts the data that was just saved
+     */
+    private function encryptRecordData($project_id, $record, $instrument, $event_id, $repeat_instance, $trigger)
     {
         try {
             // Ensure repeat_instance has a default value
@@ -145,13 +165,23 @@ class FieldEncryptionModule extends AbstractExternalModule
                 $repeat_instance = 1;
             }
 
-            $this->log("Module triggered", [
+            // Create unique key for this record to prevent infinite loops
+            $recordKey = "$project_id:$record:$event_id:$repeat_instance";
+
+            // Check if we're already processing this record
+            if (isset(self::$processingRecord[$recordKey])) {
+                $this->log("Skipping - already processing this record", ['recordKey' => $recordKey]);
+                return;
+            }
+
+            // Mark this record as being processed
+            self::$processingRecord[$recordKey] = true;
+
+            $this->log("Module triggered from $trigger", [
                 'project_id' => $project_id,
                 'record' => $record,
                 'instrument' => $instrument,
                 'event_id' => $event_id,
-                'survey_hash' => $survey_hash ? 'present' : 'null',
-                'response_id' => $response_id,
                 'repeat_instance' => $repeat_instance
             ]);
 
@@ -266,6 +296,7 @@ class FieldEncryptionModule extends AbstractExternalModule
             $saveParams = [
                 'project_id' => $project_id,
                 'dataFormat' => 'array',
+                'overwriteBehavior' => 'overwrite',
                 'data' => [
                     $record => [
                         $event_id => $updatedData
@@ -294,12 +325,18 @@ class FieldEncryptionModule extends AbstractExternalModule
         $this->log("Module finished processing");
 
         } catch (\Exception $e) {
-            $this->log("CRITICAL ERROR in redcap_save_record", [
+            $this->log("CRITICAL ERROR in encryptRecordData", [
                 'error' => $e->getMessage(),
                 'file' => $e->getFile(),
                 'line' => $e->getLine(),
                 'trace' => $e->getTraceAsString()
             ]);
+        } finally {
+            // Always clear the processing flag
+            if (isset($recordKey)) {
+                unset(self::$processingRecord[$recordKey]);
+                $this->log("Cleared processing flag", ['recordKey' => $recordKey]);
+            }
         }
     }
 
@@ -404,6 +441,63 @@ class FieldEncryptionModule extends AbstractExternalModule
         
         // Output the JavaScript
         echo $js;
+    }
+
+    /**
+     * Hook: redcap_module_export_page_top
+     * Mask encrypted fields in data exports
+     */
+    public function redcap_module_export_page_top()
+    {
+        // Add JavaScript to warn about encrypted fields
+        echo "<script>
+            $(document).ready(function() {
+                console.log('Field Encryption Module: Encrypted fields will be masked in exports');
+            });
+        </script>";
+    }
+
+    /**
+     * Hook: redcap_data_entry_form_top
+     * Display warning about encrypted fields
+     */
+    public function redcap_data_entry_form_top($project_id, $record, $instrument, $event_id, $group_id, $repeat_instance)
+    {
+        $fieldsToEncrypt = $this->getFieldsToEncrypt($project_id);
+
+        if (!empty($fieldsToEncrypt)) {
+            echo "<div style='background-color: #fff3cd; border: 1px solid #ffc107; padding: 10px; margin: 10px 0; border-radius: 4px;'>
+                <strong>🔒 Privacy Notice:</strong> This form contains encrypted fields that are hidden for privacy protection.
+            </div>";
+        }
+    }
+
+    /**
+     * Hook: redcap_report_data
+     * Mask encrypted values in report data
+     */
+    public function redcap_report_data($project_id, $data, $fields, $events, $groups, $records)
+    {
+        $fieldsToEncrypt = $this->getFieldsToEncrypt($project_id);
+
+        if (empty($fieldsToEncrypt)) {
+            return $data;
+        }
+
+        // Iterate through data and mask encrypted fields
+        foreach ($data as $record_id => &$record) {
+            foreach ($fieldsToEncrypt as $fieldName) {
+                if (isset($record[$fieldName])) {
+                    $value = $record[$fieldName];
+                    // If value is encrypted, mask it
+                    if (!empty($value) && strpos($value, 'ENC:') === 0) {
+                        $record[$fieldName] = '[ENCRYPTED]';
+                    }
+                }
+            }
+        }
+
+        return $data;
     }
 
     /**
