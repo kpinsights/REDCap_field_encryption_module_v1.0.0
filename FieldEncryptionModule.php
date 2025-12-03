@@ -3,181 +3,166 @@ namespace CERCHECW\FieldEncryptionModule;
 
 use ExternalModules\AbstractExternalModule;
 
-// Load encryption classes
 require_once __DIR__ . '/UnsafeCrypto.php';
 require_once __DIR__ . '/SaferCrypto.php';
 
 /**
- * Field Encryption Module
- * Encrypts sensitive field values to protect participant privacy
+ * REDCap Field Encryption Module
+ *
+ * Encrypts sensitive field data marked with @ENCRYPT action tag.
+ * Encrypted values are stored with an "ENC:" prefix and automatically
+ * decrypted when sending automated emails.
  */
-
 class FieldEncryptionModule extends AbstractExternalModule
 {
+    // Prevents infinite loops when hooks trigger each other
     private static $processingRecord = [];
 
     /**
-     * Hook: redcap_every_page_before_render
-     * Diagnostic hook to verify module is loading
+     * Look up which data table this project uses.
+     * Some REDCap installations use custom tables like redcap_data2.
      */
-    public function redcap_every_page_before_render($project_id)
+    private function getDataTable($project_id)
     {
-        // Only log once per session to avoid spam
-        if (!isset($_SESSION['field_encryption_loaded'])) {
-            $this->log("Field Encryption Module is LOADED and ACTIVE", [
+        $result = $this->query("SELECT data_table FROM redcap_projects WHERE project_id = ?", [$project_id]);
+
+        if ($result && $row = $result->fetch_assoc()) {
+            $tableName = $row['data_table'] ?? 'redcap_data';
+            $this->log("Found data table for project", [
                 'project_id' => $project_id,
-                'php_version' => phpversion(),
-                'module_version' => $this->VERSION ?? 'unknown'
+                'table_name' => $tableName
             ]);
-            $_SESSION['field_encryption_loaded'] = true;
+            return $tableName;
         }
+
+        $this->log("Could not find data table, using default", [
+            'project_id' => $project_id
+        ]);
+        return 'redcap_data';
     }
 
     /**
-     * Get the encryption key from system settings
-     * @return string (raw binary)
-     * @throws \Exception if the key is not set
+     * Retrieve the encryption key from system settings
      */
     private function getEncryptionKey()
     {
         $keyHex = $this->getSystemSetting('encryption-key');
-        
+
         if (empty($keyHex)) {
-            throw new \Exception('Encryption key not configured in system settings');
+            throw new \Exception('Encryption key not set in system settings');
         }
-        $myKey =  hex2bin($keyHex);
-        $this->log('Custom action triggered', [
-            'myKey' => base64_encode($myKey)
-        ]);
-        return $myKey;
+
+        return hex2bin($keyHex);
     }
 
     /**
-     * Get list of fields with @ENCRYPT action tag in this project
-     *
-     * @param int|null $project_id Optional project ID (uses current project if null)
-     * @return array List of field names to encrypt
+     * Find all fields in the data dictionary with @ENCRYPT action tag
      */
     private function getFieldsToEncrypt($project_id = null)
     {
-        try {
-            if ($project_id === null) {
-                $project_id = $this->getProjectId();
-            }
+        if ($project_id === null) {
+            $project_id = $this->getProjectId();
+        }
 
-            $this->log("Getting fields to encrypt", ['project_id' => $project_id]);
+        $this->log("Getting fields to encrypt", ['project_id' => $project_id]);
 
-            $fieldsToEncrypt = [];
+        $dictionary = \REDCap::getDataDictionary($project_id, 'array');
 
-            // Get data dictionary for this project
-            $dictionary = \REDCap::getDataDictionary($project_id, 'array');
-
-            if (empty($dictionary)) {
-                $this->log("WARNING: Data dictionary is empty", ['project_id' => $project_id]);
-                return [];
-            }
-
-            $this->log("Data dictionary retrieved", ['field_count' => count($dictionary)]);
-
-            // Look for @ENCRYPT tag in each field's annotations
-            foreach ($dictionary as $fieldName => $fieldInfo) {
-                $actionTags = $fieldInfo['field_annotation'] ?? '';
-
-                // Check if @ENCRYPT tag is present
-                if (stripos($actionTags, '@ENCRYPT') !== false) {
-                    $fieldsToEncrypt[] = $fieldName;
-                    $this->log("Found field with @ENCRYPT", [
-                        'field' => $fieldName,
-                        'annotation' => $actionTags
-                    ]);
-                }
-            }
-
-            return $fieldsToEncrypt;
-
-        } catch (\Exception $e) {
-            $this->log("ERROR in getFieldsToEncrypt", [
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString()
-            ]);
+        if (empty($dictionary)) {
+            $this->log("WARNING: Data dictionary is empty", ['project_id' => $project_id]);
             return [];
         }
+
+        $fieldsToEncrypt = [];
+
+        foreach ($dictionary as $fieldName => $fieldInfo) {
+            $actionTags = $fieldInfo['field_annotation'] ?? '';
+
+            if (stripos($actionTags, '@ENCRYPT') !== false) {
+                $fieldsToEncrypt[] = $fieldName;
+                $this->log("Found field with @ENCRYPT tag", [
+                    'field' => $fieldName,
+                    'annotation' => $actionTags
+                ]);
+            }
+        }
+
+        $this->log("Fields to encrypt", [
+            'fields' => json_encode($fieldsToEncrypt),
+            'count' => count($fieldsToEncrypt)
+        ]);
+
+        return $fieldsToEncrypt;
     }
+
+    // ========================================
+    // Encryption/Decryption Methods
+    // ========================================
+
     /**
-     * Encrypt a given plaintext value
-     * 
-     * @param string Value to encrypt
-     * @return string Encrypted value
+     * Encrypt a plaintext value and add the ENC: prefix
      */
     public function encryptValue($plaintext)
     {
         $key = $this->getEncryptionKey();
         $encrypted = SaferCrypto::encrypt($plaintext, $key, true);
-        return 'ENC:' . $encrypted; // ENC: Prefix to identify encrypted values
+        return 'ENC:' . $encrypted;
     }
+
     /**
-     * Decrypt a given encrypted value
-     * 
-     * @param string Encrypted value
-     * @return string Decrypted plaintext value
+     * Decrypt a value if it has the ENC: prefix, otherwise return as-is
      */
     public function decryptValue($encryptedValue)
     {
-        //Check if the value is encrypted
-        // If the position of ENC: is not at the start, return the value as is
-        if(strpos($encryptedValue, 'ENC:') !== 0) {
-            return $encryptedValue; // Not encrypted, return as is
+        if (strpos($encryptedValue, 'ENC:') !== 0) {
+            return $encryptedValue;
         }
 
         $key = $this->getEncryptionKey();
-        $encrypted = substr($encryptedValue, 4); // Remove ENC: prefix
-        $decrypted = SaferCrypto::decrypt($encrypted, $key, true);
-        return $decrypted;
+        $encrypted = substr($encryptedValue, 4);
+        return SaferCrypto::decrypt($encrypted, $key, true);
     }
 
-    /**
-     * Hook: redcap_survey_complete
-     * Encrypt fields after survey completion
-     */
-    public function redcap_survey_complete($project_id, $record, $instrument, $event_id, $group_id, $survey_hash, $response_id, $repeat_instance)
-    {
-        $this->encryptRecordData($project_id, $record, $instrument, $event_id, $repeat_instance, "survey_complete");
-    }
+    // ========================================
+    // Data Encryption Hooks
+    // ========================================
 
     /**
-     * Hook: redcap_save_record
-     * Encrypt fields after record save
+     * Triggered when a record is saved (data entry forms)
      */
     public function redcap_save_record($project_id, $record, $instrument, $event_id, $group_id, $survey_hash, $response_id, $repeat_instance)
     {
-        $this->encryptRecordData($project_id, $record, $instrument, $event_id, $repeat_instance, "save_record");
+        $this->encryptRecordData($project_id, $record, $instrument, $event_id, $repeat_instance);
     }
 
     /**
-     * Core encryption logic that runs after data is saved
-     * This re-encrypts the data that was just saved
+     * Triggered when a survey is completed
      */
-    private function encryptRecordData($project_id, $record, $instrument, $event_id, $repeat_instance, $trigger)
+    public function redcap_survey_complete($project_id, $record, $instrument, $event_id, $group_id, $survey_hash, $response_id, $repeat_instance)
+    {
+        $this->encryptRecordData($project_id, $record, $instrument, $event_id, $repeat_instance);
+    }
+
+    /**
+     * Main encryption logic - reads record data and encrypts marked fields
+     */
+    private function encryptRecordData($project_id, $record, $instrument, $event_id, $repeat_instance)
     {
         try {
-            // Ensure repeat_instance has a default value
-            if ($repeat_instance === null || $repeat_instance === '') {
-                $repeat_instance = 1;
-            }
-
-            // Create unique key for this record to prevent infinite loops
+            $repeat_instance = $repeat_instance ?: 1;
             $recordKey = "$project_id:$record:$event_id:$repeat_instance";
 
-            // Check if we're already processing this record
+            // Prevent infinite loops if hooks trigger each other
             if (isset(self::$processingRecord[$recordKey])) {
-                $this->log("Skipping - already processing this record", ['recordKey' => $recordKey]);
+                $this->log("Skipping - already processing this record", [
+                    'recordKey' => $recordKey
+                ]);
                 return;
             }
 
-            // Mark this record as being processed
             self::$processingRecord[$recordKey] = true;
 
-            $this->log("Module triggered from $trigger", [
+            $this->log("Starting encryption process", [
                 'project_id' => $project_id,
                 'record' => $record,
                 'instrument' => $instrument,
@@ -185,210 +170,118 @@ class FieldEncryptionModule extends AbstractExternalModule
                 'repeat_instance' => $repeat_instance
             ]);
 
-            // Get fields to encrypt
+            // Find which fields need encryption
             $fieldsToEncrypt = $this->getFieldsToEncrypt($project_id);
 
-        $this->log("Fields to encrypt found", [
-            'fields' => json_encode($fieldsToEncrypt),
-            'count' => count($fieldsToEncrypt)
-        ]);
-        
-        // If none, exit early
-        if (empty($fieldsToEncrypt)) {
-            $this->log("No fields to encrypt - EXITING");
-            return;
-        }
-        
-        // Get current data record data
-        $params = [
-            'project_id' => $project_id,
-            'return_format' => 'array',
-            'records' => [$record],
-            'events' => [$event_id]
-        ];
-
-        if ($repeat_instance > 1) {
-            $params['redcap_repeat_instance'] = $repeat_instance;
-        }
-
-        $this->log("Getting data", ['params' => json_encode($params)]);
-        $data = \REDCap::getData($params);
-
-        // check if there is data to process
-        if (empty($data)) {
-            $this->log("ERROR: getData returned empty");
-            return;
-        }
-        
-        if (!isset($data[$record][$event_id])) {
-            $this->log("ERROR: Data structure missing", [
-                'has_record' => isset($data[$record]),
-                'has_event' => isset($data[$record][$event_id])
-            ]);
-            return;
-        }
-        
-        $this->log("Data retrieved successfully");
-
-        $recordData = $data[$record][$event_id];
-
-        if ($repeat_instance > 1 && isset($recordData['repeat_instances'][$instrument][$repeat_instance])) {
-            $recordData = $recordData['repeat_instances'][$instrument][$repeat_instance];
-        }
-        
-        $this->log("Record data structure", [
-            'available_fields' => json_encode(array_keys($recordData))
-        ]);
-        
-        $needsUpdate = false;
-        $updatedData = [];
-
-        // Check each field that needs encryption
-        foreach ($fieldsToEncrypt as $fieldName) {
-            $this->log("Checking field", ['field' => $fieldName]);
-            
-            // Skip if field doesn't exist in current data
-            if (!isset($recordData[$fieldName])) {
-                $this->log("Field NOT in record data", ['field' => $fieldName]);
-                continue;
+            if (empty($fieldsToEncrypt)) {
+                $this->log("No fields to encrypt - exiting");
+                return;
             }
-            
-            $value = $recordData[$fieldName];
-            
-            $this->log("Field value", [
-                'field' => $fieldName,
-                'value' => $value,
-                'is_empty' => empty($value),
-                'starts_with_enc' => strpos($value, 'ENC:') === 0
-            ]);
-            
-            // Skip if empty or already encrypted
-            if (empty($value) || strpos($value, 'ENC:') === 0) {
-                $this->log("Skipping field (empty or encrypted)", ['field' => $fieldName]);
-                continue;
+
+            // Fetch the current record data
+            $params = [
+                'project_id' => $project_id,
+                'return_format' => 'array',
+                'records' => [$record],
+                'events' => [$event_id]
+            ];
+
+            if ($repeat_instance > 1) {
+                $params['redcap_repeat_instance'] = $repeat_instance;
             }
-            
-            // Encrypt the value
-            try {
-                $this->log("About to encrypt", ['field' => $fieldName]);
-                $encryptedValue = $this->encryptValue($value);
-                $this->log("Encryption successful", [
-                    'field' => $fieldName,
-                    'encrypted' => substr($encryptedValue, 0, 20) . '...'
+
+            $this->log("Fetching record data", [
+                'params' => json_encode($params)
+            ]);
+
+            $data = \REDCap::getData($params);
+
+            if (empty($data) || !isset($data[$record][$event_id])) {
+                $this->log("ERROR: getData returned empty or missing data structure", [
+                    'has_data' => !empty($data),
+                    'has_record' => isset($data[$record]),
+                    'has_event' => isset($data[$record][$event_id])
                 ]);
-                $updatedData[$fieldName] = $encryptedValue;
-                $needsUpdate = true;
-            } catch (\Exception $e) {
-                $this->log("ERROR encrypting", [
-                    'field' => $fieldName,
-                    'error' => $e->getMessage()
+                return;
+            }
+
+            $this->log("Successfully fetched record data");
+
+            $recordData = $data[$record][$event_id];
+
+            // Handle repeating instruments
+            if ($repeat_instance > 1 && isset($recordData['repeat_instances'][$instrument][$repeat_instance])) {
+                $recordData = $recordData['repeat_instances'][$instrument][$repeat_instance];
+                $this->log("Using repeating instrument data", [
+                    'instrument' => $instrument,
+                    'instance' => $repeat_instance
                 ]);
             }
-        }
-        
-        $this->log("After processing", [
-            'needsUpdate' => $needsUpdate,
-            'updatedData' => json_encode($updatedData)
-        ]);
-        
-        // Save encrypted values back to database
-        if ($needsUpdate) {
-            $this->log("Saving encrypted data directly to database", [
-                'record' => $record,
-                'event_id' => $event_id,
-                'field_count' => count($updatedData)
+
+            $this->log("Record data available", [
+                'fields' => json_encode(array_keys($recordData))
             ]);
 
-            try {
-                // Save each field directly to the database to bypass validation
-                foreach ($updatedData as $fieldName => $encryptedValue) {
-                    if ($repeat_instance > 1) {
-                        $sql = "UPDATE redcap_data
-                                SET value = ?
-                                WHERE project_id = ?
-                                AND event_id = ?
-                                AND record = ?
-                                AND field_name = ?
-                                AND instance = ?";
-                        $params = [
-                            $encryptedValue,
-                            $project_id,
-                            $event_id,
-                            $record,
-                            $fieldName,
-                            $repeat_instance
-                        ];
-                    } else {
-                        $sql = "UPDATE redcap_data
-                                SET value = ?
-                                WHERE project_id = ?
-                                AND event_id = ?
-                                AND record = ?
-                                AND field_name = ?
-                                AND (instance IS NULL OR instance = 1)";
-                        $params = [
-                            $encryptedValue,
-                            $project_id,
-                            $event_id,
-                            $record,
-                            $fieldName
-                        ];
-                    }
+            // Check each field and encrypt if needed
+            $updatedData = [];
 
-                    $this->log("Executing SQL UPDATE", [
-                        'sql' => $sql,
-                        'params' => json_encode($params),
-                        'field' => $fieldName,
-                        'encrypted_length' => strlen($encryptedValue)
-                    ]);
+            foreach ($fieldsToEncrypt as $fieldName) {
+                $this->log("Checking field", ['field' => $fieldName]);
 
-                    $result = $this->query($sql, $params);
-
-                    $this->log("Direct database update result", [
-                        'field' => $fieldName,
-                        'affected_rows' => $result->affected_rows,
-                        'insert_id' => $result->insert_id
-                    ]);
-
-                    // If no rows affected, log what we're looking for
-                    if ($result->affected_rows === 0) {
-                        $this->log("WARNING: No rows updated - checking if record exists", [
-                            'project_id' => $project_id,
-                            'event_id' => $event_id,
-                            'record' => $record,
-                            'field_name' => $fieldName
-                        ]);
-                    }
+                if (!isset($recordData[$fieldName])) {
+                    $this->log("Field not in record data", ['field' => $fieldName]);
+                    continue;
                 }
 
-                // Log the record in REDCap's logging table
-                \REDCap::logEvent(
-                    "Field Encryption Module",
-                    "Encrypted fields: " . implode(', ', array_keys($updatedData)),
-                    null,
-                    $record,
-                    null,
-                    $project_id
-                );
+                $value = $recordData[$fieldName];
 
-            } catch (\Exception $e) {
-                $this->log("ERROR in direct database save", ['error' => $e->getMessage()]);
+                $this->log("Field value", [
+                    'field' => $fieldName,
+                    'value' => $value,
+                    'is_empty' => empty($value),
+                    'is_encrypted' => strpos($value, 'ENC:') === 0
+                ]);
+
+                // Skip empty values or already encrypted data
+                if (empty($value) || strpos($value, 'ENC:') === 0) {
+                    $this->log("Skipping field - empty or already encrypted", [
+                        'field' => $fieldName
+                    ]);
+                    continue;
+                }
+
+                $this->log("Encrypting field", ['field' => $fieldName]);
+                $encryptedValue = $this->encryptValue($value);
+                $this->log("Field encrypted successfully", [
+                    'field' => $fieldName,
+                    'encrypted_preview' => substr($encryptedValue, 0, 20) . '...'
+                ]);
+
+                $updatedData[$fieldName] = $encryptedValue;
             }
-        } else {
-            $this->log("No updates needed - NOT SAVING");
-        }
 
-        $this->log("Module finished processing");
+            $this->log("Encryption processing complete", [
+                'fields_encrypted' => json_encode(array_keys($updatedData)),
+                'count' => count($updatedData)
+            ]);
+
+            // Write encrypted values directly to the database
+            // We bypass REDCap::saveData() because it re-validates field formats
+            if (!empty($updatedData)) {
+                $this->saveEncryptedData($project_id, $event_id, $record, $repeat_instance, $updatedData);
+            } else {
+                $this->log("No fields need updating");
+            }
 
         } catch (\Exception $e) {
-            $this->log("CRITICAL ERROR in encryptRecordData", [
+            $this->log("CRITICAL ERROR in encryption process", [
                 'error' => $e->getMessage(),
+                'record' => $record,
                 'file' => $e->getFile(),
                 'line' => $e->getLine(),
                 'trace' => $e->getTraceAsString()
             ]);
         } finally {
-            // Always clear the processing flag
             if (isset($recordKey)) {
                 unset(self::$processingRecord[$recordKey]);
                 $this->log("Cleared processing flag", ['recordKey' => $recordKey]);
@@ -396,126 +289,86 @@ class FieldEncryptionModule extends AbstractExternalModule
         }
     }
 
-        /**
-         * Hook : redcap_data_entry_form
-         * Hide encrypted values in data entry forms
-         */
-    public function redcap_data_entry_form($project_id, $record, $instrument, $event_id, $group_id, $repeat_instance)
-    {
-        // Get list of fields that need encryption
-        $fieldsToEncrypt = $this->getFieldsToEncrypt($project_id);
-        
-        // If no fields to encrypt, exit early
-        if (empty($fieldsToEncrypt)) {
-            return;
-        }
-        
-        // Build JavaScript to mask encrypted fields
-        $js = "<script type='text/javascript'>
-        $(document).ready(function() {
-            // Fields to mask
-            var fieldsToMask = " . json_encode($fieldsToEncrypt) . ";
-            
-            // Loop through each field
-            fieldsToMask.forEach(function(fieldName) {
-                // Find the input element
-                var input = $('input[name=\"' + fieldName + '\"]');
-                
-                if (input.length > 0) {
-                    var currentValue = input.val();
-                    
-                    // Check if value is encrypted (starts with ENC:)
-                    if (currentValue && currentValue.startsWith('ENC:')) {
-                        // Replace value with placeholder
-                        input.val('[ENCRYPTED - Hidden for Privacy]');
-                        
-                        // Make field read-only
-                        input.prop('readonly', true);
-                        
-                        // Add visual styling
-                        input.css({
-                            'background-color': '#f0f0f0',
-                            'color': '#666',
-                            'font-style': 'italic'
-                        });
-                    }
-                }
-            });
-        });
-        </script>";
-        
-        // Output the JavaScript
-        echo $js;
-    }
     /**
-     * Hook : redcap_survey_page
-     * Hide encrypted values on survey pages
+     * Write encrypted values directly to database to bypass field validation
      */
-    public function redcap_survey_page($project_id, $record, $instrument, $event_id, $group_id, $survey_hash, $response_id, $repeat_instance)
+    private function saveEncryptedData($project_id, $event_id, $record, $repeat_instance, $updatedData)
     {
-        // Get list of fields that need encryption
-        $fieldsToEncrypt = $this->getFieldsToEncrypt($project_id);
-        
-        // If no fields to encrypt, exit early
-        if (empty($fieldsToEncrypt)) {
-            return;
+        $dataTable = $this->getDataTable($project_id);
+
+        $this->log("Saving encrypted data to database", [
+            'table' => $dataTable,
+            'record' => $record,
+            'event_id' => $event_id,
+            'repeat_instance' => $repeat_instance,
+            'fields' => json_encode(array_keys($updatedData))
+        ]);
+
+        foreach ($updatedData as $fieldName => $encryptedValue) {
+            if ($repeat_instance > 1) {
+                $sql = "UPDATE $dataTable
+                        SET value = ?
+                        WHERE project_id = ?
+                          AND event_id = ?
+                          AND record = ?
+                          AND field_name = ?
+                          AND instance = ?";
+                $params = [$encryptedValue, $project_id, $event_id, $record, $fieldName, $repeat_instance];
+            } else {
+                $sql = "UPDATE $dataTable
+                        SET value = ?
+                        WHERE project_id = ?
+                          AND event_id = ?
+                          AND record = ?
+                          AND field_name = ?
+                          AND (instance IS NULL OR instance = 1)";
+                $params = [$encryptedValue, $project_id, $event_id, $record, $fieldName];
+            }
+
+            $this->log("Executing SQL UPDATE", [
+                'table' => $dataTable,
+                'sql' => $sql,
+                'params' => json_encode($params),
+                'field' => $fieldName
+            ]);
+
+            $result = $this->query($sql, $params);
+
+            $this->log("SQL UPDATE result", [
+                'field' => $fieldName,
+                'affected_rows' => $result->affected_rows
+            ]);
+
+            if ($result->affected_rows === 0) {
+                $this->log("WARNING: No rows updated", [
+                    'table' => $dataTable,
+                    'project_id' => $project_id,
+                    'event_id' => $event_id,
+                    'record' => $record,
+                    'field_name' => $fieldName
+                ]);
+            }
         }
-        
-        // Build JavaScript to mask encrypted fields
-        $js = "<script type='text/javascript'>
-        $(document).ready(function() {
-            // Fields to mask
-            var fieldsToMask = " . json_encode($fieldsToEncrypt) . ";
-            
-            // Loop through each field
-            fieldsToMask.forEach(function(fieldName) {
-                // Find the input element
-                var input = $('input[name=\"' + fieldName + '\"]');
-                
-                if (input.length > 0) {
-                    var currentValue = input.val();
-                    
-                    // Check if value is encrypted (starts with ENC:)
-                    if (currentValue && currentValue.startsWith('ENC:')) {
-                        // Replace value with placeholder
-                        input.val('[ENCRYPTED - Hidden for Privacy]');
-                        
-                        // Make field read-only
-                        input.prop('readonly', true);
-                        
-                        // Add visual styling
-                        input.css({
-                            'background-color': '#f0f0f0',
-                            'color': '#666',
-                            'font-style': 'italic'
-                        });
-                    }
-                }
-            });
-        });
-        </script>";
-        
-        // Output the JavaScript
-        echo $js;
+
+        // Log to REDCap's audit trail
+        \REDCap::logEvent(
+            "Field Encryption Module",
+            "Encrypted fields: " . implode(', ', array_keys($updatedData)),
+            null,
+            $record,
+            null,
+            $project_id
+        );
+
+        $this->log("Database save complete");
     }
 
-    /**
-     * Hook: redcap_module_export_page_top
-     * Mask encrypted fields in data exports
-     */
-    public function redcap_module_export_page_top()
-    {
-        // Add JavaScript to warn about encrypted fields
-        echo "<script>
-            $(document).ready(function() {
-                console.log('Field Encryption Module: Encrypted fields will be masked in exports');
-            });
-        </script>";
-    }
+    // ========================================
+    // Display & Export Masking Hooks
+    // ========================================
 
     /**
-     * Hook: redcap_data_entry_form_top
-     * Display warning about encrypted fields
+     * Show a privacy notice on forms with encrypted fields
      */
     public function redcap_data_entry_form_top($project_id, $record, $instrument, $event_id, $group_id, $repeat_instance)
     {
@@ -523,14 +376,61 @@ class FieldEncryptionModule extends AbstractExternalModule
 
         if (!empty($fieldsToEncrypt)) {
             echo "<div style='background-color: #fff3cd; border: 1px solid #ffc107; padding: 10px; margin: 10px 0; border-radius: 4px;'>
-                <strong>🔒 Privacy Notice:</strong> This form contains encrypted fields that are hidden for privacy protection.
+                <strong>Privacy Notice:</strong> This form contains encrypted fields that are hidden for privacy protection.
             </div>";
         }
     }
 
     /**
-     * Hook: redcap_report_data
-     * Mask encrypted values in report data
+     * Hide encrypted values in data entry forms
+     */
+    public function redcap_data_entry_form($project_id, $record, $instrument, $event_id, $group_id, $repeat_instance)
+    {
+        $this->maskEncryptedFields($project_id);
+    }
+
+    /**
+     * Hide encrypted values on survey pages
+     */
+    public function redcap_survey_page($project_id, $record, $instrument, $event_id, $group_id, $survey_hash, $response_id, $repeat_instance)
+    {
+        $this->maskEncryptedFields($project_id);
+    }
+
+    /**
+     * Inject JavaScript to mask encrypted field values in the UI
+     */
+    private function maskEncryptedFields($project_id)
+    {
+        $fieldsToEncrypt = $this->getFieldsToEncrypt($project_id);
+
+        if (empty($fieldsToEncrypt)) {
+            return;
+        }
+
+        echo "<script type='text/javascript'>
+        $(document).ready(function() {
+            var fieldsToMask = " . json_encode($fieldsToEncrypt) . ";
+
+            fieldsToMask.forEach(function(fieldName) {
+                var input = $('input[name=\"' + fieldName + '\"]');
+
+                if (input.length > 0 && input.val() && input.val().startsWith('ENC:')) {
+                    input.val('[ENCRYPTED]');
+                    input.prop('readonly', true);
+                    input.css({
+                        'background-color': '#f0f0f0',
+                        'color': '#666',
+                        'font-style': 'italic'
+                    });
+                }
+            });
+        });
+        </script>";
+    }
+
+    /**
+     * Mask encrypted values in reports
      */
     public function redcap_report_data($project_id, $data, $fields, $events, $groups, $records)
     {
@@ -540,15 +440,10 @@ class FieldEncryptionModule extends AbstractExternalModule
             return $data;
         }
 
-        // Iterate through data and mask encrypted fields
-        foreach ($data as $record_id => &$record) {
+        foreach ($data as &$record) {
             foreach ($fieldsToEncrypt as $fieldName) {
-                if (isset($record[$fieldName])) {
-                    $value = $record[$fieldName];
-                    // If value is encrypted, mask it
-                    if (!empty($value) && strpos($value, 'ENC:') === 0) {
-                        $record[$fieldName] = '[ENCRYPTED]';
-                    }
+                if (isset($record[$fieldName]) && !empty($record[$fieldName]) && strpos($record[$fieldName], 'ENC:') === 0) {
+                    $record[$fieldName] = '[ENCRYPTED]';
                 }
             }
         }
@@ -556,9 +451,13 @@ class FieldEncryptionModule extends AbstractExternalModule
         return $data;
     }
 
+    // ========================================
+    // Email Decryption Hook
+    // ========================================
+
     /**
-     * Hook : redcap_email
-     * Automatically decrypt email addresses for automated invitations
+     * Automatically decrypt email addresses for survey invitations
+     * REDCap stores encrypted emails, but we need real addresses to send invites
      */
     public function redcap_email($to, $from, $subject, $message, $cc, $bcc, $fromName, $attachments)
     {
@@ -568,68 +467,44 @@ class FieldEncryptionModule extends AbstractExternalModule
             $decryptedCc = $cc;
             $decryptedBcc = $bcc;
 
-            // Decrypt recipient address if encrypted
             if (!empty($to) && strpos($to, 'ENC:') === 0) {
                 $decryptedTo = $this->decryptValue($to);
                 $modified = true;
-
-                $this->log("Decrypted email TO address", [
+                $this->log("Decrypted TO email address", [
                     'original_length' => strlen($to),
                     'decrypted_email' => $decryptedTo
                 ]);
             }
 
-            // Decrypt CC addresses if encrypted
             if (!empty($cc) && strpos($cc, 'ENC:') === 0) {
                 $decryptedCc = $this->decryptValue($cc);
                 $modified = true;
-
-                $this->log("Decrypted email CC address", [
-                    'decrypted_email' => $decryptedCc
-                ]);
+                $this->log("Decrypted CC email address");
             }
 
-            // Decrypt BCC addresses if encrypted
             if (!empty($bcc) && strpos($bcc, 'ENC:') === 0) {
                 $decryptedBcc = $this->decryptValue($bcc);
                 $modified = true;
-
-                $this->log("Decrypted email BCC address", [
-                    'decrypted_email' => $decryptedBcc
-                ]);
+                $this->log("Decrypted BCC email address");
             }
 
-            // If we decrypted anything, send with decrypted values
+            // Send email with decrypted addresses and prevent REDCap from sending again
             if ($modified) {
                 \REDCap::email($decryptedTo, $from, $subject, $message, $decryptedCc, $decryptedBcc, $fromName, $attachments);
-
                 $this->log("Email sent with decrypted addresses", [
                     'to' => $decryptedTo,
                     'subject' => substr($subject, 0, 50)
                 ]);
-
-                // Return FALSE to prevent REDCap from sending again with encrypted addresses
                 return false;
             }
 
         } catch (\Exception $e) {
-            // Log error but don't break email system
-            $this->log("ERROR in redcap_email hook", [
+            $this->log("Email decryption failed", [
                 'error' => $e->getMessage(),
                 'trace' => $e->getTraceAsString()
             ]);
-
-            \REDCap::logEvent(
-                "Field Encryption Module Error",
-                "Failed to decrypt email address: " . $e->getMessage(),
-                null,
-                null,
-                null,
-                $this->getProjectId()
-            );
         }
 
-        // Not encrypted or error - let REDCap handle normally
         return true;
     }
 }
