@@ -219,6 +219,7 @@ class FieldEncryptionModule extends AbstractExternalModule
 
             // Check each field and encrypt if needed
             $updatedData = [];
+            $plaintextEmails = []; // Store original email values for participant table
 
             foreach ($fieldsToEncrypt as $fieldName) {
                 $this->log("Checking field", ['field' => $fieldName]);
@@ -245,6 +246,9 @@ class FieldEncryptionModule extends AbstractExternalModule
                     continue;
                 }
 
+                // Store original email value before encryption
+                $plaintextEmails[$fieldName] = $value;
+
                 $this->log("Encrypting field", ['field' => $fieldName]);
                 $encryptedValue = $this->encryptValue($value);
                 $this->log("Field encrypted successfully", [
@@ -264,6 +268,9 @@ class FieldEncryptionModule extends AbstractExternalModule
             // We bypass REDCap::saveData() because it re-validates field formats
             if (!empty($updatedData)) {
                 $this->saveEncryptedData($project_id, $event_id, $record, $repeat_instance, $updatedData, $instrument);
+
+                // Update participant email with plaintext for ASI to work
+                $this->updateParticipantEmail($project_id, $record, $event_id, $plaintextEmails);
             } else {
                 $this->log("No fields need updating");
             }
@@ -398,6 +405,70 @@ class FieldEncryptionModule extends AbstractExternalModule
             ]);
         }
     }
+
+    /**
+     * Update participant_email in surveys table with plaintext email for ASI
+     * The data field remains encrypted, but participant table needs plaintext for sending
+     * since ASI bypasses the redcap_email hook and doesn't decrypt
+     */
+    private function updateParticipantEmail($project_id, $record, $event_id, $plaintextEmails)
+    {
+        try {
+            // Check if this project has a designated email field for participants
+            $emailFieldQuery = "SELECT survey_email_participant_field FROM redcap_projects WHERE project_id = ?";
+            $result = $this->query($emailFieldQuery, [$project_id]);
+
+            if (!$result || !($row = $result->fetch_assoc())) {
+                $this->log("No project settings found for participant email");
+                return;
+            }
+
+            $emailFieldName = $row['survey_email_participant_field'];
+
+            if (empty($emailFieldName)) {
+                $this->log("No email field designated for participants");
+                return;
+            }
+
+            // Check if we encrypted the designated email field
+            if (!isset($plaintextEmails[$emailFieldName])) {
+                $this->log("Email field not in encrypted fields", [
+                    'email_field' => $emailFieldName
+                ]);
+                return;
+            }
+
+            $plaintextEmail = $plaintextEmails[$emailFieldName];
+
+            $this->log("Updating participant email", [
+                'email_field' => $emailFieldName,
+                'email' => $plaintextEmail
+            ]);
+
+            // Update all participant records for this record and event
+            $updateSql = "UPDATE redcap_surveys_participants p
+                         INNER JOIN redcap_surveys s ON p.survey_id = s.survey_id
+                         SET p.participant_email = ?
+                         WHERE p.event_id = ?
+                           AND p.participant_identifier = ?
+                           AND s.project_id = ?";
+
+            $updateResult = $this->query($updateSql, [$plaintextEmail, $event_id, $record, $project_id]);
+
+            $this->log("Participant email update result", [
+                'affected_rows' => $updateResult->affected_rows,
+                'record' => $record,
+                'event_id' => $event_id
+            ]);
+
+        } catch (\Exception $e) {
+            $this->log("Error updating participant email", [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+        }
+    }
+
     // Display & Export Masking Hooks
     /**
      * Show a privacy notice on forms with encrypted fields
