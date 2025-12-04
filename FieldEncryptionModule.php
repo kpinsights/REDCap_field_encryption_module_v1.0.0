@@ -305,6 +305,9 @@ class FieldEncryptionModule extends AbstractExternalModule
                         null,
                         $project_id
                     );
+
+                    // Update participant table with encrypted email for ASI to work
+                    $this->updateParticipantEmail($project_id, $record, $event_id, $updatedData);
                 }
             } else {
                 $this->log("No fields need updating");
@@ -326,6 +329,67 @@ class FieldEncryptionModule extends AbstractExternalModule
         }
     }
 
+    /**
+     * Update participant email with encrypted value so ASI can send
+     */
+    private function updateParticipantEmail($project_id, $record, $event_id, $updatedData)
+    {
+        try {
+            // Check if this project has a designated email field for participants
+            $emailFieldQuery = "SELECT survey_email_participant_field FROM redcap_projects WHERE project_id = ?";
+            $result = $this->query($emailFieldQuery, [$project_id]);
+
+            if (!$result || !($row = $result->fetch_assoc())) {
+                $this->log("No project settings found for participant email");
+                return;
+            }
+
+            $emailFieldName = $row['survey_email_participant_field'];
+
+            if (empty($emailFieldName)) {
+                $this->log("No email field designated for participants");
+                return;
+            }
+
+            // Check if we encrypted this field
+            if (!isset($updatedData[$emailFieldName])) {
+                $this->log("Email field not in encrypted data", [
+                    'email_field' => $emailFieldName
+                ]);
+                return;
+            }
+
+            $encryptedEmail = $updatedData[$emailFieldName];
+
+            $this->log("Updating participant email with encrypted value", [
+                'email_field' => $emailFieldName,
+                'encrypted_preview' => substr($encryptedEmail, 0, 30) . '...'
+            ]);
+
+            // Update ALL participant records for this record
+            $updateSql = "UPDATE redcap_surveys_participants p
+                         INNER JOIN redcap_surveys s ON p.survey_id = s.survey_id
+                         INNER JOIN redcap_surveys_response r ON p.participant_id = r.participant_id
+                         SET p.participant_email = ?
+                         WHERE r.record = ?
+                         AND p.event_id = ?
+                         AND s.project_id = ?";
+
+            $updateResult = $this->query($updateSql, [$encryptedEmail, $record, $event_id, $project_id]);
+
+            $this->log("Participant email update result", [
+                'affected_rows' => $updateResult ? $updateResult->affected_rows : 0,
+                'record' => $record,
+                'event_id' => $event_id
+            ]);
+
+        } catch (\Exception $e) {
+            $this->log("Error updating participant email", [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+        }
+    }
 
     // Display & Export Masking Hooks
     /**
