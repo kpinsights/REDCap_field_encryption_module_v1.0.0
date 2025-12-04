@@ -123,10 +123,7 @@ class FieldEncryptionModule extends AbstractExternalModule
         return SaferCrypto::decrypt($encrypted, $key, true);
     }
 
-    // ========================================
     // Data Encryption Hooks
-    // ========================================
-
     /**
      * Triggered when a record is saved (data entry forms)
      */
@@ -362,11 +359,7 @@ class FieldEncryptionModule extends AbstractExternalModule
 
         $this->log("Database save complete");
     }
-
-    // ========================================
     // Display & Export Masking Hooks
-    // ========================================
-
     /**
      * Show a privacy notice on forms with encrypted fields
      */
@@ -413,16 +406,28 @@ class FieldEncryptionModule extends AbstractExternalModule
             var fieldsToMask = " . json_encode($fieldsToEncrypt) . ";
 
             fieldsToMask.forEach(function(fieldName) {
-                var input = $('input[name=\"' + fieldName + '\"]');
+                // Try multiple selectors to catch all field types
+                var field = $('input[name=\"' + fieldName + '\"], textarea[name=\"' + fieldName + '\"], select[name=\"' + fieldName + '\"]');
 
-                if (input.length > 0 && input.val() && input.val().startsWith('ENC:')) {
-                    input.val('[ENCRYPTED]');
-                    input.prop('readonly', true);
-                    input.css({
-                        'background-color': '#f0f0f0',
-                        'color': '#666',
-                        'font-style': 'italic'
-                    });
+                if (field.length > 0) {
+                    var currentValue = field.val();
+
+                    if (currentValue && currentValue.toString().indexOf('ENC:') === 0) {
+                        field.val('[ENCRYPTED]');
+                        field.prop('readonly', true);
+                        field.prop('disabled', false); // Keep enabled so form can submit
+                        field.css({
+                            'background-color': '#f0f0f0',
+                            'color': '#666',
+                            'font-style': 'italic',
+                            'cursor': 'not-allowed'
+                        });
+
+                        // Prevent any changes to the field
+                        field.on('focus', function() {
+                            $(this).blur();
+                        });
+                    }
                 }
             });
         });
