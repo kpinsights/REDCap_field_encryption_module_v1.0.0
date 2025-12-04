@@ -95,9 +95,7 @@ class FieldEncryptionModule extends AbstractExternalModule
         return $fieldsToEncrypt;
     }
 
-    // ========================================
     // Encryption/Decryption Methods
-    // ========================================
 
     /**
      * Encrypt a plaintext value and add the ENC: prefix
@@ -265,7 +263,7 @@ class FieldEncryptionModule extends AbstractExternalModule
             // Write encrypted values directly to the database
             // We bypass REDCap::saveData() because it re-validates field formats
             if (!empty($updatedData)) {
-                $this->saveEncryptedData($project_id, $event_id, $record, $repeat_instance, $updatedData);
+                $this->saveEncryptedData($project_id, $event_id, $record, $repeat_instance, $updatedData, $instrument);
             } else {
                 $this->log("No fields need updating");
             }
@@ -289,7 +287,7 @@ class FieldEncryptionModule extends AbstractExternalModule
     /**
      * Write encrypted values directly to database to bypass field validation
      */
-    private function saveEncryptedData($project_id, $event_id, $record, $repeat_instance, $updatedData)
+    private function saveEncryptedData($project_id, $event_id, $record, $repeat_instance, $updatedData, $instrument)
     {
         $dataTable = $this->getDataTable($project_id);
 
@@ -358,6 +356,47 @@ class FieldEncryptionModule extends AbstractExternalModule
         );
 
         $this->log("Database save complete");
+
+        // Trigger REDCap's internal completion logic to enable ASI
+        $this->triggerCompletionStatus($project_id, $event_id, $record, $instrument);
+    }
+
+    /**
+     * Trigger REDCap's internal completion tracking to enable Automated Survey Invitations
+     */
+    private function triggerCompletionStatus($project_id, $event_id, $record, $instrument)
+    {
+        try {
+            $this->log("Triggering completion status for ASI", [
+                'project_id' => $project_id,
+                'record' => $record,
+                'instrument' => $instrument
+            ]);
+
+            // Use REDCap::saveData to set completion status, which triggers ASI logic
+            $saveData = [
+                $record => [
+                    $event_id => [
+                        $instrument . '_complete' => '2'  // 2 = Complete
+                    ]
+                ]
+            ];
+
+            $result = \REDCap::saveData($project_id, 'array', $saveData);
+
+            if (!empty($result['errors'])) {
+                $this->log("Error triggering completion status", [
+                    'errors' => json_encode($result['errors'])
+                ]);
+            } else {
+                $this->log("Successfully triggered completion status");
+            }
+
+        } catch (\Exception $e) {
+            $this->log("Exception triggering completion status", [
+                'error' => $e->getMessage()
+            ]);
+        }
     }
     // Display & Export Masking Hooks
     /**
@@ -455,10 +494,7 @@ class FieldEncryptionModule extends AbstractExternalModule
 
         return $data;
     }
-
-    // ========================================
     // Email Decryption Hook
-    // ========================================
 
     /**
      * Automatically decrypt email addresses for survey invitations
