@@ -643,9 +643,29 @@ class FieldEncryptionModule extends AbstractExternalModule
                 return;
             }
 
+            $projectIds = [];
             while ($projectRow = $projectsResult->fetch_assoc()) {
-                $project_id = $projectRow['project_id'];
-                $this->processEncryptedASI($project_id);
+                // If project_id is NULL that means module enabled globally.
+                // Expand that to all projects that actually have encrypted participant emails.
+                if ($projectRow['project_id'] === null) {
+                    $pQuery = "SELECT DISTINCT s.project_id
+                               FROM redcap_surveys_participants p
+                               INNER JOIN redcap_surveys s ON p.survey_id = s.survey_id
+                               WHERE p.participant_email LIKE 'ENC:%'";
+                    $pResult = $this->query($pQuery, []);
+                    if ($pResult) {
+                        while ($r = $pResult->fetch_assoc()) {
+                            $projectIds[] = $r['project_id'];
+                        }
+                    }
+                } else {
+                    $projectIds[] = $projectRow['project_id'];
+                }
+            }
+
+            $projectIds = array_values(array_unique($projectIds));
+            foreach ($projectIds as $pid) {
+                $this->processEncryptedASI($pid);
             }
 
             $this->log("Finished encrypted ASI cron job");
@@ -674,7 +694,7 @@ class FieldEncryptionModule extends AbstractExternalModule
                            INNER JOIN redcap_surveys_emails e ON r.email_id = e.email_id
                            INNER JOIN redcap_surveys s ON p.survey_id = s.survey_id
                            WHERE s.project_id = ?
-                             AND q.status = 'DID NOT SEND'
+                             AND q.status IN ('WAITING', 'DID NOT SEND')
                              AND q.scheduled_time_to_send <= NOW()
                              AND p.participant_email LIKE 'ENC:%'";
 
