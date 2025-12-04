@@ -445,15 +445,17 @@ class FieldEncryptionModule extends AbstractExternalModule
                 'email' => $plaintextEmail
             ]);
 
-            // Update all participant records for this record and event
+            // Update participant records through response table
+            // participant_identifier is NULL, so we link via response table
             $updateSql = "UPDATE redcap_surveys_participants p
+                         INNER JOIN redcap_surveys_response r ON p.participant_id = r.participant_id
                          INNER JOIN redcap_surveys s ON p.survey_id = s.survey_id
                          SET p.participant_email = ?
-                         WHERE p.event_id = ?
-                           AND p.participant_identifier = ?
+                         WHERE r.record = ?
+                           AND p.event_id = ?
                            AND s.project_id = ?";
 
-            $updateResult = $this->query($updateSql, [$plaintextEmail, $event_id, $record, $project_id]);
+            $updateResult = $this->query($updateSql, [$plaintextEmail, $record, $event_id, $project_id]);
 
             $this->log("Participant email update result", [
                 'affected_rows' => $updateResult->affected_rows,
