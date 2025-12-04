@@ -636,7 +636,7 @@ class FieldEncryptionModule extends AbstractExternalModule
             $this->log("Starting encrypted ASI cron job");
 
             // Find projects using this module that have encrypted emails
-            $projectsQuery = "SELECT DISTINCT project_id FROM redcap_external_modules WHERE directory_prefix = 'field_encryption_module_v1.0.0' AND enabled = 1";
+            $projectsQuery = "SELECT DISTINCT project_id FROM redcap_external_module_settings WHERE `key` = 'enabled' AND value = 'true' AND external_module_id IN (SELECT external_module_id FROM redcap_external_modules WHERE directory_prefix = 'field_encryption_module')";
             $projectsResult = $this->query($projectsQuery, []);
 
             if (!$projectsResult) {
