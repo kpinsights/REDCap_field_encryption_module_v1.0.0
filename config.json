@@ -27,15 +27,6 @@
             "required":true
         }
     ],
-    "crons": [
-        {
-            "cron_name": "encrypted_asi_processor",
-            "cron_description": "Process encrypted ASI emails by decrypting and sending",
-            "method": "redcap_every_minute_cron",
-            "cron_frequency": "60",
-            "cron_max_run_time": "1800"
-        }
-    ],
     "hooks": [
         {
             "hook": "redcap_save_record",

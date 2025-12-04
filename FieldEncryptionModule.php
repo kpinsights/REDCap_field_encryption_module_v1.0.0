@@ -10,36 +10,13 @@ require_once __DIR__ . '/SaferCrypto.php';
  * REDCap Field Encryption Module
  *
  * Encrypts sensitive field data marked with @ENCRYPT action tag.
- * Encrypted values are stored with an "ENC:" prefix and automatically
- * decrypted when sending automated emails.
+ * Encrypted values are stored in a format that passes REDCap's email validation
+ * (ENC_[url-safe-base64]@xx.xx) and automatically decrypted when sending emails.
  */
 class FieldEncryptionModule extends AbstractExternalModule
 {
     // Prevents infinite loops when hooks trigger each other
     private static $processingRecord = [];
-
-    /**
-     * Look up which data table this project uses.
-     * Some REDCap installations use custom tables like redcap_data2.
-     */
-    private function getDataTable($project_id)
-    {
-        $result = $this->query("SELECT data_table FROM redcap_projects WHERE project_id = ?", [$project_id]);
-
-        if ($result && $row = $result->fetch_assoc()) {
-            $tableName = $row['data_table'] ?? 'redcap_data';
-            $this->log("Found data table for project", [
-                'project_id' => $project_id,
-                'table_name' => $tableName
-            ]);
-            return $tableName;
-        }
-
-        $this->log("Could not find data table, using default", [
-            'project_id' => $project_id
-        ]);
-        return 'redcap_data';
-    }
 
     /**
      * Retrieve the encryption key from system settings
@@ -98,27 +75,55 @@ class FieldEncryptionModule extends AbstractExternalModule
     // Encryption/Decryption Methods
 
     /**
-     * Encrypt a plaintext value and add the ENC: prefix
+     * Encrypt a plaintext value using URL-safe base64 and format as fake email
+     * Format: ENC_[url-safe-base64]@xx.xx
+     * This passes REDCap's email validation while keeping data encrypted
      */
     public function encryptValue($plaintext)
     {
         $key = $this->getEncryptionKey();
         $encrypted = SaferCrypto::encrypt($plaintext, $key, true);
-        return 'ENC:' . $encrypted;
+
+        // Convert to URL-safe base64: replace +/ with -_ and remove =
+        $urlSafe = rtrim(strtr($encrypted, '+/', '-_'), '=');
+
+        // Format as fake email that passes validation
+        return 'ENC_' . $urlSafe . '@xx.xx';
     }
 
     /**
-     * Decrypt a value if it has the ENC: prefix, otherwise return as-is
+     * Decrypt a value if it has the encrypted email format, otherwise return as-is
+     * Handles format: ENC_[url-safe-base64]@xx.xx
      */
     public function decryptValue($encryptedValue)
     {
-        if (strpos($encryptedValue, 'ENC:') !== 0) {
+        // Check if this is our encrypted format
+        if (strpos($encryptedValue, '@xx.xx') === false) {
             return $encryptedValue;
         }
 
+        // Extract the part before @xx.xx
+        $localPart = substr($encryptedValue, 0, strpos($encryptedValue, '@'));
+
+        // Check if it starts with ENC_
+        if (strpos($localPart, 'ENC_') !== 0) {
+            return $encryptedValue;
+        }
+
+        // Remove "ENC_" prefix
+        $urlSafeBase64 = substr($localPart, 4);
+
+        // Convert back from URL-safe base64: replace -_ with +/
+        $base64 = strtr($urlSafeBase64, '-_', '+/');
+
+        // Restore padding
+        $remainder = strlen($base64) % 4;
+        if ($remainder) {
+            $base64 .= str_repeat('=', 4 - $remainder);
+        }
+
         $key = $this->getEncryptionKey();
-        $encrypted = substr($encryptedValue, 4);
-        return SaferCrypto::decrypt($encrypted, $key, true);
+        return SaferCrypto::decrypt($base64, $key, true);
     }
 
     // Data Encryption Hooks
@@ -235,11 +240,11 @@ class FieldEncryptionModule extends AbstractExternalModule
                     'field' => $fieldName,
                     'value' => $value,
                     'is_empty' => empty($value),
-                    'is_encrypted' => strpos($value, 'ENC:') === 0
+                    'is_encrypted' => (strpos($value, 'ENC_') === 0 && strpos($value, '@xx.xx') !== false)
                 ]);
 
                 // Skip empty values or already encrypted data
-                if (empty($value) || strpos($value, 'ENC:') === 0) {
+                if (empty($value) || (strpos($value, 'ENC_') === 0 && strpos($value, '@xx.xx') !== false)) {
                     $this->log("Skipping field - empty or already encrypted", [
                         'field' => $fieldName
                     ]);
@@ -264,13 +269,43 @@ class FieldEncryptionModule extends AbstractExternalModule
                 'count' => count($updatedData)
             ]);
 
-            // Write encrypted values directly to the database
-            // We bypass REDCap::saveData() because it re-validates field formats
+            // Save encrypted values using REDCap's standard method
+            // Now that we use URL-safe format with @xx.xx, this passes validation
             if (!empty($updatedData)) {
-                $this->saveEncryptedData($project_id, $event_id, $record, $repeat_instance, $updatedData, $instrument);
+                // Prepare data for REDCap::saveData
+                $saveData = [
+                    $record => [
+                        $event_id => $updatedData
+                    ]
+                ];
 
-                // Update participant email with plaintext for ASI to work
-                $this->updateParticipantEmail($project_id, $record, $event_id, $plaintextEmails);
+                $this->log("Saving encrypted data via REDCap::saveData", [
+                    'record' => $record,
+                    'event_id' => $event_id,
+                    'fields' => json_encode(array_keys($updatedData))
+                ]);
+
+                $result = \REDCap::saveData($project_id, 'array', $saveData, 'overwrite');
+
+                if (!empty($result['errors'])) {
+                    $this->log("Error saving encrypted data", [
+                        'errors' => json_encode($result['errors'])
+                    ]);
+                } else {
+                    $this->log("Successfully saved encrypted data", [
+                        'item_count' => $result['item_count']
+                    ]);
+
+                    // Log to REDCap's audit trail
+                    \REDCap::logEvent(
+                        "Field Encryption Module",
+                        "Encrypted fields: " . implode(', ', array_keys($updatedData)),
+                        null,
+                        $record,
+                        null,
+                        $project_id
+                    );
+                }
             } else {
                 $this->log("No fields need updating");
             }
@@ -291,187 +326,6 @@ class FieldEncryptionModule extends AbstractExternalModule
         }
     }
 
-    /**
-     * Write encrypted values directly to database to bypass field validation
-     */
-    private function saveEncryptedData($project_id, $event_id, $record, $repeat_instance, $updatedData, $instrument)
-    {
-        $dataTable = $this->getDataTable($project_id);
-
-        $this->log("Saving encrypted data to database", [
-            'table' => $dataTable,
-            'record' => $record,
-            'event_id' => $event_id,
-            'repeat_instance' => $repeat_instance,
-            'fields' => json_encode(array_keys($updatedData))
-        ]);
-
-        foreach ($updatedData as $fieldName => $encryptedValue) {
-            if ($repeat_instance > 1) {
-                $sql = "UPDATE $dataTable
-                        SET value = ?
-                        WHERE project_id = ?
-                          AND event_id = ?
-                          AND record = ?
-                          AND field_name = ?
-                          AND instance = ?";
-                $params = [$encryptedValue, $project_id, $event_id, $record, $fieldName, $repeat_instance];
-            } else {
-                $sql = "UPDATE $dataTable
-                        SET value = ?
-                        WHERE project_id = ?
-                          AND event_id = ?
-                          AND record = ?
-                          AND field_name = ?
-                          AND (instance IS NULL OR instance = 1)";
-                $params = [$encryptedValue, $project_id, $event_id, $record, $fieldName];
-            }
-
-            $this->log("Executing SQL UPDATE", [
-                'table' => $dataTable,
-                'sql' => $sql,
-                'params' => json_encode($params),
-                'field' => $fieldName
-            ]);
-
-            $result = $this->query($sql, $params);
-
-            $this->log("SQL UPDATE result", [
-                'field' => $fieldName,
-                'affected_rows' => $result->affected_rows
-            ]);
-
-            if ($result->affected_rows === 0) {
-                $this->log("WARNING: No rows updated", [
-                    'table' => $dataTable,
-                    'project_id' => $project_id,
-                    'event_id' => $event_id,
-                    'record' => $record,
-                    'field_name' => $fieldName
-                ]);
-            }
-        }
-
-        // Log to REDCap's audit trail
-        \REDCap::logEvent(
-            "Field Encryption Module",
-            "Encrypted fields: " . implode(', ', array_keys($updatedData)),
-            null,
-            $record,
-            null,
-            $project_id
-        );
-
-        $this->log("Database save complete");
-
-        // Trigger REDCap's internal completion logic to enable ASI
-        $this->triggerCompletionStatus($project_id, $event_id, $record, $instrument);
-    }
-
-    /**
-     * Trigger REDCap's internal completion tracking to enable Automated Survey Invitations
-     */
-    private function triggerCompletionStatus($project_id, $event_id, $record, $instrument)
-    {
-        try {
-            $this->log("Triggering completion status for ASI", [
-                'project_id' => $project_id,
-                'record' => $record,
-                'instrument' => $instrument
-            ]);
-
-            // Use REDCap::saveData to set completion status, which triggers ASI logic
-            $saveData = [
-                $record => [
-                    $event_id => [
-                        $instrument . '_complete' => '2'  // 2 = Complete
-                    ]
-                ]
-            ];
-
-            $result = \REDCap::saveData($project_id, 'array', $saveData);
-
-            if (!empty($result['errors'])) {
-                $this->log("Error triggering completion status", [
-                    'errors' => json_encode($result['errors'])
-                ]);
-            } else {
-                $this->log("Successfully triggered completion status");
-            }
-
-        } catch (\Exception $e) {
-            $this->log("Exception triggering completion status", [
-                'error' => $e->getMessage()
-            ]);
-        }
-    }
-
-    /**
-     * Update participant_email with ENCRYPTED email to keep it hidden
-     * A cron job will handle decryption when actually sending ASI emails
-     */
-    private function updateParticipantEmail($project_id, $record, $event_id, $plaintextEmails)
-    {
-        try {
-            // Check if this project has a designated email field for participants
-            $emailFieldQuery = "SELECT survey_email_participant_field FROM redcap_projects WHERE project_id = ?";
-            $result = $this->query($emailFieldQuery, [$project_id]);
-
-            if (!$result || !($row = $result->fetch_assoc())) {
-                $this->log("No project settings found for participant email");
-                return;
-            }
-
-            $emailFieldName = $row['survey_email_participant_field'];
-
-            if (empty($emailFieldName)) {
-                $this->log("No email field designated for participants");
-                return;
-            }
-
-            // Check if we have this field in our encrypted data
-            if (!isset($plaintextEmails[$emailFieldName])) {
-                $this->log("Email field not in encrypted fields", [
-                    'email_field' => $emailFieldName
-                ]);
-                return;
-            }
-
-            // Store ENCRYPTED email in participant table
-            $encryptedEmail = $this->encryptValue($plaintextEmails[$emailFieldName]);
-
-            $this->log("Updating participant email with encrypted value", [
-                'email_field' => $emailFieldName,
-                'encrypted_preview' => substr($encryptedEmail, 0, 30) . '...'
-            ]);
-
-            // Update ALL participant records for this record across all surveys
-            $updateSql = "UPDATE redcap_surveys_participants p
-                         INNER JOIN redcap_surveys s ON p.survey_id = s.survey_id
-                         SET p.participant_email = ?
-                         WHERE p.participant_id IN (
-                             SELECT r.participant_id
-                             FROM redcap_surveys_response r
-                             WHERE r.record = ?
-                         )
-                         AND p.event_id = ?
-                         AND s.project_id = ?";
-
-            $updateResult = $this->query($updateSql, [$encryptedEmail, $record, $event_id, $project_id]);
-
-            $this->log("Participant email update result", [
-                'affected_rows' => $updateResult->affected_rows,
-                'record' => $record,
-                'event_id' => $event_id
-            ]);
-
-        } catch (\Exception $e) {
-            $this->log("Error updating participant email", [
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString()
-            ]);
-        }
-    }
 
     // Display & Export Masking Hooks
     /**
@@ -526,7 +380,8 @@ class FieldEncryptionModule extends AbstractExternalModule
                 if (field.length > 0) {
                     var currentValue = field.val();
 
-                    if (currentValue && currentValue.toString().indexOf('ENC:') === 0) {
+                    // Check for new encrypted format: ENC_[base64]@xx.xx
+                    if (currentValue && currentValue.toString().indexOf('ENC_') === 0 && currentValue.toString().indexOf('@xx.xx') !== -1) {
                         field.val('[ENCRYPTED]');
                         field.prop('readonly', true);
                         field.prop('disabled', false); // Keep enabled so form can submit
@@ -561,7 +416,7 @@ class FieldEncryptionModule extends AbstractExternalModule
 
         foreach ($data as &$record) {
             foreach ($fieldsToEncrypt as $fieldName) {
-                if (isset($record[$fieldName]) && !empty($record[$fieldName]) && strpos($record[$fieldName], 'ENC:') === 0) {
+                if (isset($record[$fieldName]) && !empty($record[$fieldName]) && strpos($record[$fieldName], 'ENC_') === 0 && strpos($record[$fieldName], '@xx.xx') !== false) {
                     $record[$fieldName] = '[ENCRYPTED]';
                 }
             }
@@ -583,22 +438,23 @@ class FieldEncryptionModule extends AbstractExternalModule
             $decryptedCc = $cc;
             $decryptedBcc = $bcc;
 
-            if (!empty($to) && strpos($to, 'ENC:') === 0) {
+            // Check for encrypted email format: ENC_[base64]@xx.xx
+            if (!empty($to) && strpos($to, 'ENC_') === 0 && strpos($to, '@xx.xx') !== false) {
                 $decryptedTo = $this->decryptValue($to);
                 $modified = true;
                 $this->log("Decrypted TO email address", [
-                    'original_length' => strlen($to),
+                    'encrypted_format' => substr($to, 0, 20) . '...',
                     'decrypted_email' => $decryptedTo
                 ]);
             }
 
-            if (!empty($cc) && strpos($cc, 'ENC:') === 0) {
+            if (!empty($cc) && strpos($cc, 'ENC_') === 0 && strpos($cc, '@xx.xx') !== false) {
                 $decryptedCc = $this->decryptValue($cc);
                 $modified = true;
                 $this->log("Decrypted CC email address");
             }
 
-            if (!empty($bcc) && strpos($bcc, 'ENC:') === 0) {
+            if (!empty($bcc) && strpos($bcc, 'ENC_') === 0 && strpos($bcc, '@xx.xx') !== false) {
                 $decryptedBcc = $this->decryptValue($bcc);
                 $modified = true;
                 $this->log("Decrypted BCC email address");
@@ -624,159 +480,4 @@ class FieldEncryptionModule extends AbstractExternalModule
         return true;
     }
 
-    // Cron Job for Processing Encrypted ASI Emails
-
-    /**
-     * Cron job that processes ASI queue and sends emails with encrypted addresses
-     * Runs every minute to check for pending survey invitations
-     */
-    public function redcap_every_minute_cron()
-    {
-        try {
-            $this->log("Starting encrypted ASI cron job");
-
-            // Find projects using this module that have encrypted emails
-            $projectsQuery = "SELECT DISTINCT project_id FROM redcap_external_module_settings WHERE `key` = 'enabled' AND value = 'true' AND external_module_id IN (SELECT external_module_id FROM redcap_external_modules WHERE directory_prefix = 'field_encryption_module')";
-            $projectsResult = $this->query($projectsQuery, []);
-
-            if (!$projectsResult) {
-                return;
-            }
-
-            $projectIds = [];
-            while ($projectRow = $projectsResult->fetch_assoc()) {
-                // If project_id is NULL that means module enabled globally.
-                // Expand that to all projects that actually have encrypted participant emails.
-                if ($projectRow['project_id'] === null) {
-                    $pQuery = "SELECT DISTINCT s.project_id
-                               FROM redcap_surveys_participants p
-                               INNER JOIN redcap_surveys s ON p.survey_id = s.survey_id
-                               WHERE p.participant_email LIKE 'ENC:%'";
-                    $pResult = $this->query($pQuery, []);
-                    if ($pResult) {
-                        while ($r = $pResult->fetch_assoc()) {
-                            $projectIds[] = $r['project_id'];
-                        }
-                    }
-                } else {
-                    $projectIds[] = $projectRow['project_id'];
-                }
-            }
-
-            $projectIds = array_values(array_unique($projectIds));
-            foreach ($projectIds as $pid) {
-                $this->processEncryptedASI($pid);
-            }
-
-            $this->log("Finished encrypted ASI cron job");
-
-        } catch (\Exception $e) {
-            $this->log("Error in encrypted ASI cron", [
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString()
-            ]);
-        }
-    }
-
-    /**
-     * Process encrypted ASI emails for a specific project
-     */
-    private function processEncryptedASI($project_id)
-    {
-        try {
-            // Find failed ASI attempts with encrypted emails
-            $queueQuery = "SELECT q.ssq_id, q.email_recip_id, q.record, q.scheduled_time_to_send,
-                                  p.participant_id, p.participant_email, p.survey_id,
-                                  e.email_id, e.email_subject, e.email_content, e.email_sender, e.email_sender_display
-                           FROM redcap_surveys_scheduler_queue q
-                           INNER JOIN redcap_surveys_emails_recipients r ON q.email_recip_id = r.email_recip_id
-                           INNER JOIN redcap_surveys_participants p ON r.participant_id = p.participant_id
-                           INNER JOIN redcap_surveys_emails e ON r.email_id = e.email_id
-                           INNER JOIN redcap_surveys s ON p.survey_id = s.survey_id
-                           WHERE s.project_id = ?
-                             AND q.status IN ('WAITING', 'DID NOT SEND')
-                             AND q.scheduled_time_to_send <= NOW()
-                             AND p.participant_email LIKE 'ENC:%'";
-
-            $queueResult = $this->query($queueQuery, [$project_id]);
-
-            if (!$queueResult) {
-                return;
-            }
-
-            while ($row = $queueResult->fetch_assoc()) {
-                $this->sendEncryptedASI($row);
-            }
-
-        } catch (\Exception $e) {
-            $this->log("Error processing encrypted ASI", [
-                'project_id' => $project_id,
-                'error' => $e->getMessage()
-            ]);
-        }
-    }
-
-    /**
-     * Decrypt and send a single ASI email
-     */
-    private function sendEncryptedASI($queueData)
-    {
-        try {
-            $this->log("Processing encrypted ASI email", [
-                'ssq_id' => $queueData['ssq_id'],
-                'record' => $queueData['record']
-            ]);
-
-            // Decrypt the email address
-            $encryptedEmail = $queueData['participant_email'];
-            $decryptedEmail = $this->decryptValue($encryptedEmail);
-
-            $this->log("Decrypted ASI email", [
-                'ssq_id' => $queueData['ssq_id'],
-                'decrypted_email' => $decryptedEmail
-            ]);
-
-            // Get survey link
-            $surveyLink = \REDCap::getSurveyLink($queueData['record'], $queueData['survey_id']);
-
-            // Replace placeholders in email content
-            $emailContent = str_replace('[survey-link]', '<a href="' . $surveyLink . '">' . $queueData['email_subject'] . '</a>', $queueData['email_content']);
-            $emailContent = str_replace('[survey-url]', $surveyLink, $emailContent);
-
-            // Send the email
-            $sent = \REDCap::email(
-                $decryptedEmail,
-                $queueData['email_sender'],
-                $queueData['email_subject'],
-                $emailContent,
-                null, // cc
-                null, // bcc
-                $queueData['email_sender_display']
-            );
-
-            if ($sent) {
-                // Update queue status to SENT
-                $updateQuery = "UPDATE redcap_surveys_scheduler_queue
-                               SET status = 'SENT', time_sent = NOW()
-                               WHERE ssq_id = ?";
-                $this->query($updateQuery, [$queueData['ssq_id']]);
-
-                $this->log("Successfully sent encrypted ASI", [
-                    'ssq_id' => $queueData['ssq_id'],
-                    'record' => $queueData['record']
-                ]);
-            } else {
-                $this->log("Failed to send encrypted ASI", [
-                    'ssq_id' => $queueData['ssq_id']
-                ]);
-            }
-
-        } catch (\Exception $e) {
-            $this->log("Error sending encrypted ASI", [
-                'ssq_id' => $queueData['ssq_id'],
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString()
-            ]);
-        }
-    }
 }
