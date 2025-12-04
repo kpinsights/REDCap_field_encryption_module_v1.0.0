@@ -407,9 +407,8 @@ class FieldEncryptionModule extends AbstractExternalModule
     }
 
     /**
-     * Update participant_email in surveys table with plaintext email for ASI
-     * The data field remains encrypted, but participant table needs plaintext for sending
-     * since ASI bypasses the redcap_email hook and doesn't decrypt
+     * Update participant_email with ENCRYPTED email to keep it hidden
+     * A cron job will handle decryption when actually sending ASI emails
      */
     private function updateParticipantEmail($project_id, $record, $event_id, $plaintextEmails)
     {
@@ -430,7 +429,7 @@ class FieldEncryptionModule extends AbstractExternalModule
                 return;
             }
 
-            // Check if we encrypted the designated email field
+            // Check if we have this field in our encrypted data
             if (!isset($plaintextEmails[$emailFieldName])) {
                 $this->log("Email field not in encrypted fields", [
                     'email_field' => $emailFieldName
@@ -438,24 +437,27 @@ class FieldEncryptionModule extends AbstractExternalModule
                 return;
             }
 
-            $plaintextEmail = $plaintextEmails[$emailFieldName];
+            // Store ENCRYPTED email in participant table
+            $encryptedEmail = $this->encryptValue($plaintextEmails[$emailFieldName]);
 
-            $this->log("Updating participant email", [
+            $this->log("Updating participant email with encrypted value", [
                 'email_field' => $emailFieldName,
-                'email' => $plaintextEmail
+                'encrypted_preview' => substr($encryptedEmail, 0, 30) . '...'
             ]);
 
-            // Update participant records through response table
-            // participant_identifier is NULL, so we link via response table
+            // Update ALL participant records for this record across all surveys
             $updateSql = "UPDATE redcap_surveys_participants p
-                         INNER JOIN redcap_surveys_response r ON p.participant_id = r.participant_id
                          INNER JOIN redcap_surveys s ON p.survey_id = s.survey_id
                          SET p.participant_email = ?
-                         WHERE r.record = ?
-                           AND p.event_id = ?
-                           AND s.project_id = ?";
+                         WHERE p.participant_id IN (
+                             SELECT r.participant_id
+                             FROM redcap_surveys_response r
+                             WHERE r.record = ?
+                         )
+                         AND p.event_id = ?
+                         AND s.project_id = ?";
 
-            $updateResult = $this->query($updateSql, [$plaintextEmail, $record, $event_id, $project_id]);
+            $updateResult = $this->query($updateSql, [$encryptedEmail, $record, $event_id, $project_id]);
 
             $this->log("Participant email update result", [
                 'affected_rows' => $updateResult->affected_rows,
@@ -620,5 +622,141 @@ class FieldEncryptionModule extends AbstractExternalModule
         }
 
         return true;
+    }
+
+    // Cron Job for Processing Encrypted ASI Emails
+
+    /**
+     * Cron job that processes ASI queue and sends emails with encrypted addresses
+     * Runs every minute to check for pending survey invitations
+     */
+    public function redcap_every_minute_cron()
+    {
+        try {
+            $this->log("Starting encrypted ASI cron job");
+
+            // Find projects using this module that have encrypted emails
+            $projectsQuery = "SELECT DISTINCT project_id FROM redcap_external_modules WHERE directory_prefix = 'field_encryption_module_v1.0.0' AND enabled = 1";
+            $projectsResult = $this->query($projectsQuery, []);
+
+            if (!$projectsResult) {
+                return;
+            }
+
+            while ($projectRow = $projectsResult->fetch_assoc()) {
+                $project_id = $projectRow['project_id'];
+                $this->processEncryptedASI($project_id);
+            }
+
+            $this->log("Finished encrypted ASI cron job");
+
+        } catch (\Exception $e) {
+            $this->log("Error in encrypted ASI cron", [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+        }
+    }
+
+    /**
+     * Process encrypted ASI emails for a specific project
+     */
+    private function processEncryptedASI($project_id)
+    {
+        try {
+            // Find failed ASI attempts with encrypted emails
+            $queueQuery = "SELECT q.ssq_id, q.email_recip_id, q.record, q.scheduled_time_to_send,
+                                  p.participant_id, p.participant_email, p.survey_id,
+                                  e.email_id, e.email_subject, e.email_content, e.email_sender, e.email_sender_display
+                           FROM redcap_surveys_scheduler_queue q
+                           INNER JOIN redcap_surveys_emails_recipients r ON q.email_recip_id = r.email_recip_id
+                           INNER JOIN redcap_surveys_participants p ON r.participant_id = p.participant_id
+                           INNER JOIN redcap_surveys_emails e ON r.email_id = e.email_id
+                           INNER JOIN redcap_surveys s ON p.survey_id = s.survey_id
+                           WHERE s.project_id = ?
+                             AND q.status = 'DID NOT SEND'
+                             AND q.scheduled_time_to_send <= NOW()
+                             AND p.participant_email LIKE 'ENC:%'";
+
+            $queueResult = $this->query($queueQuery, [$project_id]);
+
+            if (!$queueResult) {
+                return;
+            }
+
+            while ($row = $queueResult->fetch_assoc()) {
+                $this->sendEncryptedASI($row);
+            }
+
+        } catch (\Exception $e) {
+            $this->log("Error processing encrypted ASI", [
+                'project_id' => $project_id,
+                'error' => $e->getMessage()
+            ]);
+        }
+    }
+
+    /**
+     * Decrypt and send a single ASI email
+     */
+    private function sendEncryptedASI($queueData)
+    {
+        try {
+            $this->log("Processing encrypted ASI email", [
+                'ssq_id' => $queueData['ssq_id'],
+                'record' => $queueData['record']
+            ]);
+
+            // Decrypt the email address
+            $encryptedEmail = $queueData['participant_email'];
+            $decryptedEmail = $this->decryptValue($encryptedEmail);
+
+            $this->log("Decrypted ASI email", [
+                'ssq_id' => $queueData['ssq_id'],
+                'decrypted_email' => $decryptedEmail
+            ]);
+
+            // Get survey link
+            $surveyLink = \REDCap::getSurveyLink($queueData['record'], $queueData['survey_id']);
+
+            // Replace placeholders in email content
+            $emailContent = str_replace('[survey-link]', '<a href="' . $surveyLink . '">' . $queueData['email_subject'] . '</a>', $queueData['email_content']);
+            $emailContent = str_replace('[survey-url]', $surveyLink, $emailContent);
+
+            // Send the email
+            $sent = \REDCap::email(
+                $decryptedEmail,
+                $queueData['email_sender'],
+                $queueData['email_subject'],
+                $emailContent,
+                null, // cc
+                null, // bcc
+                $queueData['email_sender_display']
+            );
+
+            if ($sent) {
+                // Update queue status to SENT
+                $updateQuery = "UPDATE redcap_surveys_scheduler_queue
+                               SET status = 'SENT', time_sent = NOW()
+                               WHERE ssq_id = ?";
+                $this->query($updateQuery, [$queueData['ssq_id']]);
+
+                $this->log("Successfully sent encrypted ASI", [
+                    'ssq_id' => $queueData['ssq_id'],
+                    'record' => $queueData['record']
+                ]);
+            } else {
+                $this->log("Failed to send encrypted ASI", [
+                    'ssq_id' => $queueData['ssq_id']
+                ]);
+            }
+
+        } catch (\Exception $e) {
+            $this->log("Error sending encrypted ASI", [
+                'ssq_id' => $queueData['ssq_id'],
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+        }
     }
 }
