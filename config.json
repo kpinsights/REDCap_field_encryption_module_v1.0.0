@@ -26,5 +26,35 @@
             "type":"text",
             "required":true
         }
+    ],
+    "hooks": [
+        {
+            "hook": "redcap_save_record",
+            "description": "Encrypt fields after record save"
+        },
+        {
+            "hook": "redcap_survey_complete",
+            "description": "Encrypt fields after survey completion"
+        },
+        {
+            "hook": "redcap_email",
+            "description": "Decrypt email addresses for automated invitations"
+        },
+        {
+            "hook": "redcap_data_entry_form",
+            "description": "Mask encrypted values in data entry forms"
+        },
+        {
+            "hook": "redcap_data_entry_form_top",
+            "description": "Show privacy notice on forms"
+        },
+        {
+            "hook": "redcap_survey_page",
+            "description": "Mask encrypted values on survey pages"
+        },
+        {
+            "hook": "redcap_report_data",
+            "description": "Mask encrypted values in reports"
+        }
     ]
 }
