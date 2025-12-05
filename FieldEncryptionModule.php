@@ -554,17 +554,18 @@ class FieldEncryptionModule extends AbstractExternalModule
             $this->log("Cron: Starting processScheduledSurveyInvitations");
 
             // Find all scheduled invitations that are ready to send and have encrypted emails
-            $sql = "SELECT ssq.ssq_id, ssq.record, ssq.scheduled_time_to_send,
-                           p.participant_id, p.participant_email, p.participant_phone,
-                           s.survey_id, s.project_id, ssq.event_id,
-                           ssq.delivery_type, e.email_subject, e.email_content, e.email_sender
+            $sql = "SELECT ssq.ssq_id, ssq.record, ssq.scheduled_time_to_send, ssq.ss_id,
+                           er.participant_id, p.participant_email,
+                           ss.survey_id, ss.project_id, ss.event_id,
+                           e.email_subject, e.email_content, e.email_sender
                     FROM redcap_surveys_scheduler_queue ssq
-                    INNER JOIN redcap_surveys_participants p ON ssq.participant_id = p.participant_id
-                    INNER JOIN redcap_surveys s ON ssq.survey_id = s.survey_id
-                    LEFT JOIN redcap_surveys_emails e ON ssq.email_id = e.email_id
+                    INNER JOIN redcap_surveys_emails_recipients er ON ssq.email_recip_id = er.email_recip_id
+                    INNER JOIN redcap_surveys_participants p ON er.participant_id = p.participant_id
+                    INNER JOIN redcap_surveys_scheduler ss ON ssq.ss_id = ss.ss_id
+                    LEFT JOIN redcap_surveys_emails e ON ss.email_id = e.email_id
                     WHERE ssq.scheduled_time_to_send <= NOW()
+                    AND ssq.status = 'QUEUED'
                     AND p.participant_email LIKE 'ENC_%@xx.xx'
-                    AND ssq.reason_not_sent IS NULL
                     ORDER BY ssq.scheduled_time_to_send ASC
                     LIMIT 100";
 
@@ -618,9 +619,12 @@ class FieldEncryptionModule extends AbstractExternalModule
                     );
 
                     if ($emailSent) {
-                        // Mark as sent in the queue - delete the entry
-                        $deleteSql = "DELETE FROM redcap_surveys_scheduler_queue WHERE ssq_id = ?";
-                        $this->query($deleteSql, [$row['ssq_id']]);
+                        // Mark as sent in the queue
+                        $updateSql = "UPDATE redcap_surveys_scheduler_queue
+                                      SET status = 'SENT',
+                                          time_sent = NOW()
+                                      WHERE ssq_id = ?";
+                        $this->query($updateSql, [$row['ssq_id']]);
 
                         $this->log("Cron: Email sent successfully", [
                             'ssq_id' => $row['ssq_id'],
@@ -641,7 +645,8 @@ class FieldEncryptionModule extends AbstractExternalModule
 
                     // Mark as failed
                     $updateSql = "UPDATE redcap_surveys_scheduler_queue
-                                  SET reason_not_sent = 'EMAIL ATTEMPT FAILED (ENCRYPTION MODULE)'
+                                  SET status = 'DID NOT SEND',
+                                      reason_not_sent = 'EMAIL ATTEMPT FAILED'
                                   WHERE ssq_id = ?";
                     $this->query($updateSql, [$row['ssq_id']]);
 
