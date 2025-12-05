@@ -572,7 +572,7 @@ class FieldEncryptionModule extends AbstractExternalModule
             $this->log("Cron: Executing query");
 
             try {
-                $result = $this->query($sql);
+                $result = $this->query($sql, []); // Empty array required for prepared statements
                 $this->log("Cron: Query call completed", [
                     'result_type' => gettype($result),
                     'is_object' => is_object($result)
