@@ -642,15 +642,16 @@ class FieldEncryptionModule extends AbstractExternalModule
 
                     $this->log("Cron: Attempting to send email - To: " . $decryptedEmail . ", From: " . $emailSender . ", Subject: " . substr($emailSubject, 0, 50));
 
-                    // Send email using REDCap's email function
-                    $emailSent = \REDCap::email(
-                        $decryptedEmail,
-                        $emailSender,
-                        $emailSubject,
-                        $emailContent
-                    );
+                    // Prepare email headers
+                    $headers = "From: " . $emailSender . "\r\n";
+                    $headers .= "Reply-To: " . $emailSender . "\r\n";
+                    $headers .= "MIME-Version: 1.0\r\n";
+                    $headers .= "Content-Type: text/html; charset=UTF-8\r\n";
 
-                    $this->log("Cron: REDCap::email() returned: " . ($emailSent ? 'true' : 'false'));
+                    // Send email using PHP's mail function (REDCap::email doesn't work in cron context)
+                    $emailSent = mail($decryptedEmail, $emailSubject, $emailContent, $headers);
+
+                    $this->log("Cron: mail() returned: " . ($emailSent ? 'true' : 'false'));
 
                     if ($emailSent) {
                         // Mark as sent in the queue
