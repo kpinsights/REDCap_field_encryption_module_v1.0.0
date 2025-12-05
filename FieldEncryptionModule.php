@@ -585,6 +585,14 @@ class FieldEncryptionModule extends AbstractExternalModule
             $processedCount = 0;
             $failedCount = 0;
 
+            // Check if result is valid
+            if (!is_object($result) || !method_exists($result, 'fetch_assoc')) {
+                $this->log("Cron: Invalid result object", [
+                    'result_type' => gettype($result)
+                ]);
+                return;
+            }
+
             while ($row = $result->fetch_assoc()) {
                 try {
                     $this->log("Cron: Processing invitation", [
