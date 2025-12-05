@@ -556,13 +556,13 @@ class FieldEncryptionModule extends AbstractExternalModule
             // Find all scheduled invitations that are ready to send and have encrypted emails
             $sql = "SELECT ssq.ssq_id, ssq.record, ssq.scheduled_time_to_send, ssq.ss_id,
                            er.participant_id, p.participant_email,
-                           ss.survey_id, ss.project_id, ss.event_id,
-                           e.email_subject, e.email_content, e.email_sender
+                           surv.survey_id, surv.project_id, ss.event_id,
+                           ss.email_subject, ss.email_content, ss.email_sender
                     FROM redcap_surveys_scheduler_queue ssq
                     INNER JOIN redcap_surveys_emails_recipients er ON ssq.email_recip_id = er.email_recip_id
                     INNER JOIN redcap_surveys_participants p ON er.participant_id = p.participant_id
                     INNER JOIN redcap_surveys_scheduler ss ON ssq.ss_id = ss.ss_id
-                    LEFT JOIN redcap_surveys_emails e ON ss.email_id = e.email_id
+                    INNER JOIN redcap_surveys surv ON ss.survey_id = surv.survey_id
                     WHERE ssq.scheduled_time_to_send <= NOW()
                     AND ssq.status = 'QUEUED'
                     AND p.participant_email LIKE 'ENC_%@xx.xx'

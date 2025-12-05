@@ -32,7 +32,7 @@
             "cron_name": "process_encrypted_asi",
             "cron_description": "Process Automated Survey Invitations with encrypted emails before REDCap's cron",
             "method": "processScheduledSurveyInvitations",
-            "cron_frequency": "50",
+            "cron_frequency": "30",
             "cron_max_run_time": "60"
         }
     ],
