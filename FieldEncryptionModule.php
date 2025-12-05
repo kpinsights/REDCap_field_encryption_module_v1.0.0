@@ -569,12 +569,18 @@ class FieldEncryptionModule extends AbstractExternalModule
                     ORDER BY ssq.scheduled_time_to_send ASC
                     LIMIT 100";
 
+            $this->log("Cron: Executing query");
+
             $result = $this->query($sql);
 
             if (!$result) {
-                $this->log("Cron: No scheduled invitations found or query failed");
+                $this->log("Cron: Query failed or no results", [
+                    'sql' => substr($sql, 0, 200)
+                ]);
                 return;
             }
+
+            $this->log("Cron: Query executed successfully");
 
             $processedCount = 0;
             $failedCount = 0;
