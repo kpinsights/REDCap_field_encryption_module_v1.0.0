@@ -544,4 +544,122 @@ class FieldEncryptionModule extends AbstractExternalModule
         return true;
     }
 
+    /**
+     * Cron job to process scheduled survey invitations with encrypted emails
+     * Runs every 50 seconds, before REDCap's SurveyInvitationEmailer (60 seconds)
+     */
+    public function processScheduledSurveyInvitations()
+    {
+        try {
+            $this->log("Cron: Starting processScheduledSurveyInvitations");
+
+            // Find all scheduled invitations that are ready to send and have encrypted emails
+            $sql = "SELECT ssq.ssq_id, ssq.record, ssq.scheduled_time_to_send,
+                           p.participant_id, p.participant_email, p.participant_phone,
+                           s.survey_id, s.project_id, ssq.event_id,
+                           ssq.delivery_type, e.email_subject, e.email_content, e.email_sender
+                    FROM redcap_surveys_scheduler_queue ssq
+                    INNER JOIN redcap_surveys_participants p ON ssq.participant_id = p.participant_id
+                    INNER JOIN redcap_surveys s ON ssq.survey_id = s.survey_id
+                    LEFT JOIN redcap_surveys_emails e ON ssq.email_id = e.email_id
+                    WHERE ssq.scheduled_time_to_send <= NOW()
+                    AND p.participant_email LIKE 'ENC_%@xx.xx'
+                    AND ssq.reason_not_sent IS NULL
+                    ORDER BY ssq.scheduled_time_to_send ASC
+                    LIMIT 100";
+
+            $result = $this->query($sql);
+
+            if (!$result) {
+                $this->log("Cron: No scheduled invitations found or query failed");
+                return;
+            }
+
+            $processedCount = 0;
+            $failedCount = 0;
+
+            while ($row = $result->fetch_assoc()) {
+                try {
+                    $this->log("Cron: Processing invitation", [
+                        'ssq_id' => $row['ssq_id'],
+                        'record' => $row['record'],
+                        'encrypted_email_preview' => substr($row['participant_email'], 0, 30) . '...'
+                    ]);
+
+                    // Decrypt the email address
+                    $decryptedEmail = $this->decryptValue($row['participant_email']);
+
+                    if (!$decryptedEmail || $decryptedEmail === $row['participant_email']) {
+                        throw new \Exception("Failed to decrypt email");
+                    }
+
+                    $this->log("Cron: Email decrypted successfully", [
+                        'ssq_id' => $row['ssq_id'],
+                        'decrypted_email' => $decryptedEmail
+                    ]);
+
+                    // Get survey link
+                    $surveyLink = \REDCap::getSurveyLink($row['record'], $row['survey_id'], $row['event_id'], 1);
+
+                    // Prepare email content
+                    $emailSubject = $row['email_subject'] ?: "Survey Invitation";
+                    $emailContent = $row['email_content'] ?: "Please complete the survey: " . $surveyLink;
+                    $emailSender = $row['email_sender'] ?: "noreply@" . $_SERVER['SERVER_NAME'];
+
+                    // Replace [survey-link] placeholder
+                    $emailContent = str_replace('[survey-link]', $surveyLink, $emailContent);
+
+                    // Send email using REDCap's email function
+                    $emailSent = \REDCap::email(
+                        $decryptedEmail,
+                        $emailSender,
+                        $emailSubject,
+                        $emailContent
+                    );
+
+                    if ($emailSent) {
+                        // Mark as sent in the queue - delete the entry
+                        $deleteSql = "DELETE FROM redcap_surveys_scheduler_queue WHERE ssq_id = ?";
+                        $this->query($deleteSql, [$row['ssq_id']]);
+
+                        $this->log("Cron: Email sent successfully", [
+                            'ssq_id' => $row['ssq_id'],
+                            'record' => $row['record'],
+                            'to' => $decryptedEmail
+                        ]);
+
+                        $processedCount++;
+                    } else {
+                        throw new \Exception("REDCap::email() returned false");
+                    }
+
+                } catch (\Exception $e) {
+                    $this->log("Cron: Failed to process invitation", [
+                        'ssq_id' => $row['ssq_id'],
+                        'error' => $e->getMessage()
+                    ]);
+
+                    // Mark as failed
+                    $updateSql = "UPDATE redcap_surveys_scheduler_queue
+                                  SET reason_not_sent = 'EMAIL ATTEMPT FAILED (ENCRYPTION MODULE)'
+                                  WHERE ssq_id = ?";
+                    $this->query($updateSql, [$row['ssq_id']]);
+
+                    $failedCount++;
+                }
+            }
+
+            $this->log("Cron: Finished processing invitations", [
+                'processed' => $processedCount,
+                'failed' => $failedCount
+            ]);
+
+        } catch (\Exception $e) {
+            $this->log("Cron: Fatal error in processScheduledSurveyInvitations", [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString()
+            ]);
+        }
+    }
+
 }
