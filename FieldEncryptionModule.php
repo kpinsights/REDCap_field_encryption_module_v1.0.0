@@ -662,10 +662,8 @@ class FieldEncryptionModule extends AbstractExternalModule
                     }
 
                 } catch (\Exception $e) {
-                    $this->log("Cron: Failed to process invitation", [
-                        'ssq_id' => $row['ssq_id'],
-                        'error' => $e->getMessage()
-                    ]);
+                    $this->log("Cron: Failed ssq_id " . $row['ssq_id'] . " - " . $e->getMessage());
+                    $this->log("Cron: Failure location - " . $e->getFile() . ":" . $e->getLine());
 
                     // Mark as failed
                     $updateSql = "UPDATE redcap_surveys_scheduler_queue
