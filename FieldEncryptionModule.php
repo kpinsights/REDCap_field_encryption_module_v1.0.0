@@ -564,7 +564,7 @@ class FieldEncryptionModule extends AbstractExternalModule
                     INNER JOIN redcap_surveys_scheduler ss ON ssq.ss_id = ss.ss_id
                     INNER JOIN redcap_surveys surv ON ss.survey_id = surv.survey_id
                     WHERE ssq.scheduled_time_to_send <= NOW()
-                    AND ssq.status = 'QUEUED'
+                    AND (ssq.status = 'QUEUED' OR (ssq.status = 'DID NOT SEND' AND ssq.reason_not_sent = 'EMAIL ATTEMPT FAILED'))
                     AND p.participant_email LIKE 'ENC_%@xx.xx'
                     ORDER BY ssq.scheduled_time_to_send ASC
                     LIMIT 100";
