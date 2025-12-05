@@ -640,6 +640,8 @@ class FieldEncryptionModule extends AbstractExternalModule
                     // Replace [survey-link] placeholder
                     $emailContent = str_replace('[survey-link]', $surveyLink, $emailContent);
 
+                    $this->log("Cron: Attempting to send email - To: " . $decryptedEmail . ", From: " . $emailSender . ", Subject: " . substr($emailSubject, 0, 50));
+
                     // Send email using REDCap's email function
                     $emailSent = \REDCap::email(
                         $decryptedEmail,
@@ -647,6 +649,8 @@ class FieldEncryptionModule extends AbstractExternalModule
                         $emailSubject,
                         $emailContent
                     );
+
+                    $this->log("Cron: REDCap::email() returned: " . ($emailSent ? 'true' : 'false'));
 
                     if ($emailSent) {
                         // Mark as sent in the queue
