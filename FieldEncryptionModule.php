@@ -571,12 +571,22 @@ class FieldEncryptionModule extends AbstractExternalModule
 
             $this->log("Cron: Executing query");
 
-            $result = $this->query($sql);
+            try {
+                $result = $this->query($sql);
+                $this->log("Cron: Query call completed", [
+                    'result_type' => gettype($result),
+                    'is_object' => is_object($result)
+                ]);
+            } catch (\Exception $queryEx) {
+                $this->log("Cron: Query threw exception", [
+                    'error' => $queryEx->getMessage(),
+                    'code' => $queryEx->getCode()
+                ]);
+                throw $queryEx;
+            }
 
             if (!$result) {
-                $this->log("Cron: Query failed or no results", [
-                    'sql' => substr($sql, 0, 200)
-                ]);
+                $this->log("Cron: Query returned false/null");
                 return;
             }
 
@@ -674,10 +684,10 @@ class FieldEncryptionModule extends AbstractExternalModule
             ]);
 
         } catch (\Exception $e) {
-            $this->log("Cron: Fatal error in processScheduledSurveyInvitations", [
-                'error' => $e->getMessage(),
-                'trace' => $e->getTraceAsString()
-            ]);
+            $this->log("Cron: Fatal error - " . $e->getMessage());
+            $this->log("Cron: Error code - " . $e->getCode());
+            $this->log("Cron: Error file - " . $e->getFile() . ":" . $e->getLine());
+            $this->log("Cron: Stack trace - " . substr($e->getTraceAsString(), 0, 500));
         }
     }
 
