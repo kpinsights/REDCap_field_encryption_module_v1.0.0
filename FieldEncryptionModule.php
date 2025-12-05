@@ -623,6 +623,12 @@ class FieldEncryptionModule extends AbstractExternalModule
                         'decrypted_email' => $decryptedEmail
                     ]);
 
+                    // Set project context for REDCap functions
+                    $_GET['pid'] = $row['project_id'];
+                    if (!defined('PROJECT_ID')) {
+                        define('PROJECT_ID', $row['project_id']);
+                    }
+
                     // Get survey link
                     $surveyLink = \REDCap::getSurveyLink($row['record'], $row['survey_id'], $row['event_id'], 1);
 
