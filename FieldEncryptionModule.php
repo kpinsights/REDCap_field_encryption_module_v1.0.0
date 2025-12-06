@@ -639,7 +639,8 @@ class FieldEncryptionModule extends AbstractExternalModule
                     $emailSender = $row['email_sender'] ?: "noreply@" . $_SERVER['SERVER_NAME'];
 
                     // Replace survey link placeholders
-                    $emailContent = str_replace('[survey-link]', $surveyLink, $emailContent);
+                    $surveyLinkClickable = '<a href="' . $surveyLink . '">' . $surveyLink . '</a>';
+                    $emailContent = str_replace('[survey-link]', $surveyLinkClickable, $emailContent);
                     $emailContent = str_replace('[survey-url]', $surveyLink, $emailContent);
 
                     $this->log("Cron: Attempting to send email - To: " . $decryptedEmail . ", From: " . $emailSender . ", Subject: " . substr($emailSubject, 0, 50));
