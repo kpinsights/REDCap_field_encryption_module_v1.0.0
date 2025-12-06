@@ -637,21 +637,16 @@ class FieldEncryptionModule extends AbstractExternalModule
                     $emailContent = $row['email_content'] ?: "Please complete the survey: " . $surveyLink;
                     $emailSender = $row['email_sender'] ?: "noreply@" . $_SERVER['SERVER_NAME'];
 
-                    // Replace [survey-link] placeholder
+                    // Replace survey link placeholders
                     $emailContent = str_replace('[survey-link]', $surveyLink, $emailContent);
+                    $emailContent = str_replace('[survey-url]', $surveyLink, $emailContent);
 
                     $this->log("Cron: Attempting to send email - To: " . $decryptedEmail . ", From: " . $emailSender . ", Subject: " . substr($emailSubject, 0, 50));
 
-                    // Prepare email headers
-                    $headers = "From: " . $emailSender . "\r\n";
-                    $headers .= "Reply-To: " . $emailSender . "\r\n";
-                    $headers .= "MIME-Version: 1.0\r\n";
-                    $headers .= "Content-Type: text/html; charset=UTF-8\r\n";
+                    // Use REDCap's Messaging class 
+                    $emailSent = \REDCap::email($decryptedEmail, $emailSender, $emailSubject, $emailContent, '', '', '', [], $row['project_id']);
 
-                    // Send email using PHP's mail function (REDCap::email doesn't work in cron context)
-                    $emailSent = mail($decryptedEmail, $emailSubject, $emailContent, $headers);
-
-                    $this->log("Cron: mail() returned: " . ($emailSent ? 'true' : 'false'));
+                    $this->log("Cron: REDCap::email() with project context returned: " . ($emailSent ? 'true' : 'false'));
 
                     if ($emailSent) {
                         // Mark as sent in the queue
