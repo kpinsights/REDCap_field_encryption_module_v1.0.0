@@ -639,7 +639,7 @@ class FieldEncryptionModule extends AbstractExternalModule
                     $emailSender = $row['email_sender'] ?: "noreply@" . $_SERVER['SERVER_NAME'];
 
                     // Replace survey link placeholders
-                    $surveyLinkClickable = '<a href="' . $surveyLink . '">' . $surveyLink . '</a>';
+                    $surveyLinkClickable = '<a href="' . $surveyLink . '">Survey Link</a>';
                     $emailContent = str_replace('[survey-link]', $surveyLinkClickable, $emailContent);
                     $emailContent = str_replace('[survey-url]', $surveyLink, $emailContent);
 
