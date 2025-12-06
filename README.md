@@ -16,7 +16,7 @@ How it works:
 
 1. Add `@ENCRYPT` action tag to sensitive fields (typically email)
 2. Participant submits the survey with their email
-3. The module automatically encrypts it - researchers see `[ENCRYPTED - Hidden for Privacy]`
+3. The module automatically encrypts it and researchers/users see encrypted email and not the actual email address
 4. A background cron job decrypts the email when sending survey invitations
 5. Participant receives the survey link at their actual email address
 
