@@ -114,12 +114,12 @@ Encrypted data in backups requires the same encryption key for decryption.
 
 ## Authors
 
-Kshitiz Pokhrel
-kpokhrel@torontomu.ca
+Kshitiz Pokhrel<br>
+kpokhrel@torontomu.ca<br>
 CERC in Health Equity & Community Well-Being, Toronto Metropolitan University
 
-Ryan McRonald
-rmcronald@uvic.ca
+Ryan McRonald<br>
+rmcronald@uvic.ca<br>
 University of Victoria
 
 ## Version
