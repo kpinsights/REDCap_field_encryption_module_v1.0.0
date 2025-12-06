@@ -440,7 +440,7 @@ class FieldEncryptionModule extends AbstractExternalModule
 
                 fieldsToMask.forEach(function(fieldName) {
                     // Escape field name for use in jQuery selector
-                    var escapedFieldName = fieldName.replace(/[!"#$%&'()*+,.\/:;<=>?@\[\\\]^`{|}~]/g, '\\\\$&');
+                    var escapedFieldName = fieldName.replace(/[!\"#$%&'()*+,.\/:;<=>?@\[\\\\\]^`{|}~]/g, '\\\\\\\\$&');
 
                     // Try multiple selectors to catch all field types
                     var field = $('input[name=\"' + escapedFieldName + '\"], textarea[name=\"' + escapedFieldName + '\"], select[name=\"' + escapedFieldName + '\"]');
