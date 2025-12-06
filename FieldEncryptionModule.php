@@ -654,7 +654,8 @@ class FieldEncryptionModule extends AbstractExternalModule
                         // Mark as sent in the queue
                         $updateSql = "UPDATE redcap_surveys_scheduler_queue
                                       SET status = 'SENT',
-                                          time_sent = NOW()
+                                          time_sent = NOW(),
+                                          reason_not_sent = NULL
                                       WHERE ssq_id = ?";
                         $this->query($updateSql, [$row['ssq_id']]);
 
