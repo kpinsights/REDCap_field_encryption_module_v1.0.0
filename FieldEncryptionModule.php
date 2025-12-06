@@ -631,6 +631,7 @@ class FieldEncryptionModule extends AbstractExternalModule
 
                     // Get survey link
                     $surveyLink = \REDCap::getSurveyLink($row['record'], $row['survey_id'], $row['event_id'], 1);
+                    $this->log("Cron: Generated survey link: " . $surveyLink);
 
                     // Prepare email content
                     $emailSubject = $row['email_subject'] ?: "Survey Invitation";
