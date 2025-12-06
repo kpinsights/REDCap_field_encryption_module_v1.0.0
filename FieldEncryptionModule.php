@@ -444,7 +444,7 @@ class FieldEncryptionModule extends AbstractExternalModule
                 if (field.length > 0) {
                     var currentValue = field.val();
 
-                    // Check for new encrypted format: ENC_[base64]@xx.xx
+                    // Check for encrypted format: ENC_[base64]@xx.xx
                     if (currentValue && currentValue.toString().indexOf('ENC_') === 0 && currentValue.toString().indexOf('@xx.xx') !== -1) {
                         field.val('[ENCRYPTED]');
                         field.prop('readonly', true);
@@ -546,7 +546,6 @@ class FieldEncryptionModule extends AbstractExternalModule
 
     /**
      * Cron job to process scheduled survey invitations with encrypted emails
-     * Runs every 50 seconds, before REDCap's SurveyInvitationEmailer (60 seconds)
      */
     public function processScheduledSurveyInvitations()
     {
@@ -567,7 +566,7 @@ class FieldEncryptionModule extends AbstractExternalModule
                     AND (ssq.status = 'QUEUED' OR (ssq.status = 'DID NOT SEND' AND ssq.reason_not_sent = 'EMAIL ATTEMPT FAILED'))
                     AND p.participant_email LIKE 'ENC_%@xx.xx'
                     ORDER BY ssq.scheduled_time_to_send ASC
-                    LIMIT 100";
+                    LIMIT 200";
 
             $this->log("Cron: Executing query");
 
@@ -643,7 +642,7 @@ class FieldEncryptionModule extends AbstractExternalModule
                     $emailContent = str_replace('[survey-link]', $surveyLinkClickable, $emailContent);
                     $emailContent = str_replace('[survey-url]', $surveyLink, $emailContent);
 
-                    $this->log("Cron: Attempting to send email - To: " . $decryptedEmail . ", From: " . $emailSender . ", Subject: " . substr($emailSubject, 0, 50));
+                    $this->log("Cron: Attempting to send email - Record: " . $row['record'] . ", Survey ID: " . $row['survey_id'] . ", Subject: " . substr($emailSubject, 0, 50));
 
                     // Use REDCap's Messaging class 
                     $emailSent = \REDCap::email($decryptedEmail, $emailSender, $emailSubject, $emailContent, '', '', '', [], $row['project_id']);
@@ -662,7 +661,7 @@ class FieldEncryptionModule extends AbstractExternalModule
                         $this->log("Cron: Email sent successfully", [
                             'ssq_id' => $row['ssq_id'],
                             'record' => $row['record'],
-                            'to' => $decryptedEmail
+                            'survey_id' => $row['survey_id']
                         ]);
 
                         $processedCount++;
