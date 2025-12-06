@@ -555,8 +555,8 @@ class FieldEncryptionModule extends AbstractExternalModule
 
             // Find all scheduled invitations that are ready to send and have encrypted emails
             $sql = "SELECT ssq.ssq_id, ssq.record, ssq.scheduled_time_to_send, ssq.ss_id,
-                           er.participant_id, p.participant_email,
-                           surv.survey_id, surv.project_id, ss.event_id,
+                           er.participant_id, p.participant_email, p.hash,
+                           surv.survey_id, surv.project_id, surv.form_name, ss.event_id,
                            ss.email_subject, ss.email_content, ss.email_sender
                     FROM redcap_surveys_scheduler_queue ssq
                     INNER JOIN redcap_surveys_emails_recipients er ON ssq.email_recip_id = er.email_recip_id
@@ -629,8 +629,8 @@ class FieldEncryptionModule extends AbstractExternalModule
                         define('PROJECT_ID', $row['project_id']);
                     }
 
-                    // Get survey link
-                    $surveyLink = \REDCap::getSurveyLink($row['record'], $row['survey_id'], $row['event_id'], 1);
+                    // Build survey link using the participant hash
+                    $surveyLink = APP_PATH_SURVEY_FULL . "?s=" . $row['hash'];
                     $this->log("Cron: Generated survey link: " . $surveyLink);
 
                     // Prepare email content
