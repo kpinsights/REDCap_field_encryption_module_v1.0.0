@@ -434,36 +434,41 @@ class FieldEncryptionModule extends AbstractExternalModule
         }
 
         echo "<script type='text/javascript'>
-        $(document).ready(function() {
-            var fieldsToMask = " . json_encode($fieldsToEncrypt) . ";
+        (function() {
+            $(document).ready(function() {
+                var fieldsToMask = " . json_encode($fieldsToEncrypt, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) . ";
 
-            fieldsToMask.forEach(function(fieldName) {
-                // Try multiple selectors to catch all field types
-                var field = $('input[name=\"' + fieldName + '\"], textarea[name=\"' + fieldName + '\"], select[name=\"' + fieldName + '\"]');
+                fieldsToMask.forEach(function(fieldName) {
+                    // Escape field name for use in jQuery selector
+                    var escapedFieldName = fieldName.replace(/[!"#$%&'()*+,.\/:;<=>?@\[\\\]^`{|}~]/g, '\\\\$&');
 
-                if (field.length > 0) {
-                    var currentValue = field.val();
+                    // Try multiple selectors to catch all field types
+                    var field = $('input[name=\"' + escapedFieldName + '\"], textarea[name=\"' + escapedFieldName + '\"], select[name=\"' + escapedFieldName + '\"]');
 
-                    // Check for encrypted format: ENC_[base64]@xx.xx
-                    if (currentValue && currentValue.toString().indexOf('ENC_') === 0 && currentValue.toString().indexOf('@xx.xx') !== -1) {
-                        field.val('[ENCRYPTED]');
-                        field.prop('readonly', true);
-                        field.prop('disabled', false); // Keep enabled so form can submit
-                        field.css({
-                            'background-color': '#f0f0f0',
-                            'color': '#666',
-                            'font-style': 'italic',
-                            'cursor': 'not-allowed'
-                        });
+                    if (field.length > 0) {
+                        var currentValue = field.val();
 
-                        // Prevent any changes to the field
-                        field.on('focus', function() {
-                            $(this).blur();
-                        });
+                        // Check for encrypted format: ENC_[base64]@xx.xx
+                        if (currentValue && currentValue.toString().indexOf('ENC_') === 0 && currentValue.toString().indexOf('@xx.xx') !== -1) {
+                            field.val('[ENCRYPTED]');
+                            field.prop('readonly', true);
+                            field.prop('disabled', false); // Keep enabled so form can submit
+                            field.css({
+                                'background-color': '#f0f0f0',
+                                'color': '#666',
+                                'font-style': 'italic',
+                                'cursor': 'not-allowed'
+                            });
+
+                            // Prevent any changes to the field
+                            field.on('focus', function() {
+                                $(this).blur();
+                            });
+                        }
                     }
-                }
+                });
             });
-        });
+        })();
         </script>";
     }
 
