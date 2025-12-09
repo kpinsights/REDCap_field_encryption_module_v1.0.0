@@ -366,16 +366,15 @@ class FieldEncryptionModule extends AbstractExternalModule
                 'encrypted_preview' => substr($encryptedEmail, 0, 30) . '...'
             ]);
 
-            // Update ALL participant records for this record
+            // Update ALL participant records for this record across all events
             $updateSql = "UPDATE redcap_surveys_participants p
                          INNER JOIN redcap_surveys s ON p.survey_id = s.survey_id
                          INNER JOIN redcap_surveys_response r ON p.participant_id = r.participant_id
                          SET p.participant_email = ?
                          WHERE r.record = ?
-                         AND p.event_id = ?
                          AND s.project_id = ?";
 
-            $updateResult = $this->query($updateSql, [$encryptedEmail, $record, $event_id, $project_id]);
+            $updateResult = $this->query($updateSql, [$encryptedEmail, $record, $project_id]);
 
             $this->log("Participant email update result", [
                 'affected_rows' => $updateResult ? $updateResult->affected_rows : 0,
