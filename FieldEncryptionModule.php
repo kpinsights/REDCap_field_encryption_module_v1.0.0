@@ -419,7 +419,11 @@ class FieldEncryptionModule extends AbstractExternalModule
      */
     public function redcap_survey_page($project_id, $record, $instrument, $event_id, $group_id, $survey_hash, $response_id, $repeat_instance)
     {
-        $this->maskEncryptedFields($project_id);
+        // Only mask fields if there's an existing record with a response
+        // Don't mask on new/blank surveys
+        if (!empty($record) && !empty($response_id)) {
+            $this->maskEncryptedFields($project_id);
+        }
     }
 
     /**
